@@ -46,6 +46,14 @@ export interface ColorCoordinates {
   oklch: Vec3;
 }
 
+/**
+ * Extension. How far a catalogue colour can be trusted:
+ * - `community`: crowd-sourced hex, unverified against the product;
+ * - `manufacturer`: published by the maker;
+ * - `measured`: instrument reading of the physical product.
+ */
+export type ColorSource = 'community' | 'manufacturer' | 'measured';
+
 export interface CatalogItem {
   id: string;
   brand: string;
@@ -58,6 +66,8 @@ export interface CatalogItem {
   opacity: number;
   color: ColorCoordinates;
   discontinued: boolean;
+  /** Extension. Absent means unknown; treat as `community`. */
+  colorSource?: ColorSource;
 }
 
 export interface SingleMatch {

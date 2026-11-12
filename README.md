@@ -11,8 +11,8 @@ The project is built in gated phases. Each phase stops for sign-off.
 
 | Phase | Scope | State |
 | --- | --- | --- |
-| 1 | Deterministic colour science and mixing kernel | **Done, awaiting sign-off** |
-| 2 | Catalogue schema, seed data, local-first store | Not started |
+| 1 | Deterministic colour science and mixing kernel | Done |
+| 2 | Catalogue schema, seed data, local-first store | **Done, awaiting sign-off** |
 | 3 | Image normalisation and palette extraction | Not started |
 | 4 | Interactive UI and "Shop Your Stash" solver | Not started |
 | 5 | Vision-assisted onboarding and export | Not started |
@@ -36,8 +36,9 @@ runs unchanged in a browser, a Web Worker, an edge runtime or Node.
 
 ```sh
 npm install
-npm test          # unit tests, including the 50 ms performance budget
+npm test               # all unit tests, including both performance budgets
 npm run typecheck
+npm run seed:generate  # rebuild the seed SQL and client bundle from the source list
 ```
 
 ### Use it
@@ -110,3 +111,97 @@ reproduce the sRGB primaries.
   beyond the four files listed for Phase 1; the solver is what the 50 ms
   performance target actually measures.
 - **All 34 Sharma pairs are tested**, not a sample.
+
+## Phase 2: catalogue, seed data and local store
+
+### Stack decision
+
+The specification suggested Next.js with Supabase/PostgreSQL. This project
+uses **Cloudflare D1 (SQLite) behind Workers** instead, with the front end to
+be a React PWA. Reasons: the app is local-first, so the server only distributes
+the catalogue and relays stash changes; nothing in the schema needs
+PostgreSQL-specific features; and it keeps hosting on one platform. The schema
+is plain SQL with CHECK constraints and would port to PostgreSQL with minor
+type changes if that is ever needed.
+
+No Worker, database or other cloud resource has been created yet. The
+migration has been run against SQLite locally, not against a real D1 database.
+
+### What was added
+
+| Path | What it is |
+| --- | --- |
+| `migrations/0001_initial_schema.sql` | D1 schema: `brands`, `catalog_items`, `user_stashes`, `recipes`, `recipe_items`, with indexes |
+| `data/catalog/seed-source.json` | 111 curated items: name, code, hex, finish, opacity, provenance |
+| `scripts/buildSeedSource.py` | One-off import tool that built the source list from two public datasets |
+| `scripts/generateSeed.ts` | Computes CIELAB/OKLCh for every item and writes the two files below |
+| `db/seed/catalog_seed.sql` | Generated seed rows for D1 (idempotent) |
+| `src/data/catalogSeed.json` | Generated client bundle of the same catalogue |
+| `src/lib/catalog/seedBuilder.ts` | Validation, id scheme, and SQL/JSON serialisation used by the generator |
+| `src/lib/store/stashStore.ts` | Local-first store: IndexedDB for durability, in-memory index for queries |
+
+### Seed catalogue
+
+111 items: Citadel 40, Vallejo Model Color 25, Monument Hobbies Pro Acryl 23,
+DMC six-strand floss 23. It deliberately includes metallics, washes, contrast
+paints, a fluorescent, a gloss and two discontinued paints so every matching
+rule has real data to act on.
+
+**Where the data came from, and how far to trust it**
+
+- Names, codes and hex values for the paints come from
+  [Arcturus5404/miniature-paints](https://github.com/Arcturus5404/miniature-paints)
+  (MIT licence). DMC values come from
+  [seanockert/rgb-to-dmc](https://github.com/seanockert/rgb-to-dmc), which
+  publishes no licence file.
+- These are community hex values. They have **not** been checked against
+  physical paint or thread, and some are plainly approximate (the source lists
+  Citadel's Abaddon Black as pure `#000000`, which no real paint is). Every
+  seed row is therefore marked `color_source = 'community'`.
+- **Finish and opacity are not in either dataset.** They were assigned by hand
+  in `scripts/buildSeedSource.py` (for example, Citadel Shade paints as `wash`
+  at opacity 0.25). Treat them as editorial assumptions.
+- The paint dataset has no Citadel product codes, so Citadel SKUs are derived
+  from the paint name.
+
+The schema records a `color_source` per item (`community`, `manufacturer` or
+`measured`) so better data can replace the seed row by row and the UI can show
+how trustworthy each match is.
+
+### Local store
+
+`StashStore` loads the catalogue and stash from IndexedDB once, then answers
+every query from memory, which is why filtering is fast: reading thousands of
+rows from IndexedDB per query would not meet the budget.
+
+```ts
+import { StashStore, createIndexedDbAdapter } from './src/lib/store/stashStore';
+import type { CatalogBundle } from './src/lib/catalog/seedBuilder';
+import seedJson from './src/data/catalogSeed.json';
+
+const seed = seedJson as unknown as CatalogBundle;
+const store = await StashStore.open(await createIndexedDbAdapter());
+if (store.catalogRevision < seed.revision) await store.importCatalog(seed.items, seed.revision);
+
+await store.setOwned('citadel:base:mephiston-red', true);
+store.queryCatalog({ text: 'red', owned: true });
+store.queryCatalog({ near: { lab: [45, 50, 30], maxDeltaE: 5 }, sort: 'deltaE' });
+store.getSolver().solve('#7a8f5c', { mode: 'strict_stash' });
+```
+
+Measured on a 6,000-item synthetic catalogue in the development container:
+text and attribute filters take under 0.5 ms, and ranking the whole catalogue
+by colour distance takes about 3 ms, against a 15 ms budget.
+
+**Sync.** The store does not talk to a server. It keeps what a sync layer
+needs: every stash entry has a timestamp, a tombstone flag for removals and a
+`dirty` flag, exposed through `pendingChanges()`, `markSynced()` and
+`applyRemote()`. Conflicts resolve last-write-wins per item. The network half
+of sync is not built yet.
+
+### Not done in this phase
+
+- No Worker API, authentication or deployed database.
+- No network sync; only the local bookkeeping for it.
+- `user_id` is an opaque string with no users table, pending an auth decision.
+- The catalogue is a 111-item sample, not a full range for any brand.
