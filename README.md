@@ -13,8 +13,8 @@ The project is built in gated phases. Each phase stops for sign-off.
 | --- | --- | --- |
 | 1 | Deterministic colour science and mixing kernel | Done |
 | 2 | Catalogue schema, seed data, local-first store | Done |
-| 3 | Image normalisation and palette extraction | **Done, awaiting sign-off** |
-| 4 | Interactive UI and "Shop Your Stash" solver | Not started |
+| 3 | Image normalisation and palette extraction | Done, in review |
+| 4 | Interactive UI and "Shop Your Stash" solver | **Done, awaiting sign-off** |
 | 5 | Vision-assisted onboarding and export | Not started |
 
 ## Phase 1: the colour kernel
@@ -40,6 +40,9 @@ npm test               # all unit tests, including both performance budgets
 npm run typecheck
 npm run seed:generate  # rebuild the seed SQL and client bundle from the source list
 npm run test:browser   # image pipeline in headless Chromium (needs Playwright installed)
+npm run dev            # the app, with hot reload
+npm run build          # typecheck, then production bundle in dist/
+npm run test:e2e       # drive the built app in headless Chromium (needs Playwright installed)
 ```
 
 ### Use it
@@ -280,3 +283,70 @@ correct on the fly.
 
 - No user interface: there is no loupe or pin on screen yet (Phase 4).
 - Semantic region detection ("cloak highlights") is Phase 5.
+
+## Phase 4: the app
+
+A React single-page app in `src/app/`, built with Vite. It is installable and
+works offline after the first visit. Three tabs:
+
+- **Photo.** Open a photo (or the built-in sample), tap to drop pins, drag
+  them to fine-tune with a magnifier, and see the best match for each pin.
+  Lighting can be corrected by tapping a neutral point or automatically. A
+  switch chooses between **Full catalogue** (also suggests what to buy) and
+  **My stash only**. The main colours of the photo can be extracted in one tap.
+- **Recipe.** Paste a tutorial's supply list. Each line is resolved to a
+  catalogue item and answered from the stash: owned, substitute, mix, or
+  missing. Lines that nothing owned can get close to (ΔE above 4) form the
+  shopping list, which can be copied.
+- **Stash.** Search the catalogue and mark what you own. Saved on the device.
+
+| Path | What it is |
+| --- | --- |
+| `src/app/views/WorkspaceView.tsx` | Photo canvas, draggable pins, magnifier, lighting tools, palette |
+| `src/app/views/RecipeView.tsx` | Recipe translator table and shopping list |
+| `src/app/views/StashView.tsx` | Catalogue browser and ownership toggles |
+| `src/app/components/SplitSwatch.tsx` | Target and match touching along one sharp edge |
+| `src/app/components/MatchCard.tsx` | One target and the best option for it |
+| `src/lib/catalog/recipeParser.ts` | Resolves free-text lines to catalogue items |
+| `src/lib/match/matchSummary.ts` | Turns a solver result into a verdict and wording |
+| `public/sw.js`, `public/manifest.webmanifest` | Offline support and install metadata |
+| `scripts/e2e.mjs` | End-to-end test of the production build |
+
+### Design decisions
+
+- **Plain CSS, not Tailwind.** The specification suggested Tailwind. With five
+  components a single stylesheet with design tokens is smaller and has nothing
+  to configure or keep compatible. It can be swapped in later if the UI grows.
+- **Swatches are never decorated.** The two halves of a comparison share an
+  edge with no gap, border, rounding or shadow, and sit on the same mid-grey
+  in light and dark themes, because any separator or coloured surround changes
+  how a difference looks. The end-to-end test measures this.
+- **Recipes are resolved by rules, not a language model.** Every word of a
+  paint's name must appear in the line (one typo allowed in longer words), or
+  the line must carry its product code. A line that fits several items asks
+  the user to choose; a line that fits none is reported, not guessed.
+- **A poor nearest option is labelled as such.** When nothing owned is close,
+  the nearest mix is still shown, but under "Nothing you own gets close".
+- **Photos never leave the device.** All image work happens in the browser.
+
+### Verification
+
+- 196 unit tests, including 15 new ones for recipe parsing and verdicts.
+- `npm run test:e2e` builds the production bundle and drives it in headless
+  Chromium at 390 x 844 and 1280 x 900: builds a stash and confirms it survives
+  a reload, places, drags, nudges and deletes pins, corrects lighting from the
+  grey card, switches match mode, extracts a palette, translates the example
+  recipe, checks the shopping list, confirms the swatch halves touch, reloads
+  with the network off, and checks for sideways scrolling and console errors.
+
+### Not done, or not verified
+
+- **Not deployed.** Nothing has been published; `npm run build` output is
+  static and can be served from any host.
+- **Not tested on real devices or in Safari or Firefox**, only headless
+  Chromium with touch emulation.
+- **Not tested with real photographs.**
+- **No accessibility audit.** Controls are labelled and keyboard-operable, and
+  pins can be moved with arrow keys, but no screen-reader testing was done.
+- Pins and the open photo are not saved between visits (export is Phase 5).
+- No accounts or cross-device sync.
