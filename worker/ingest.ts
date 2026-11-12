@@ -12,8 +12,8 @@
  * is treated as untrusted text throughout.
  *
  * This module has no dependency on Cloudflare or on the Anthropic SDK: the
- * vision call and the rate-limit store are passed in, so the whole request
- * path is unit-tested with fakes.
+ * vision call and the rate limiter are passed in, so the whole request path
+ * is unit-tested with fakes.
  */
 
 import { Hono } from 'hono';
@@ -55,16 +55,43 @@ export type VisionResult =
 /** Reads product labels out of an image. Implemented with Claude in vision.ts. */
 export type VisionExtractor = (image: IngestImage) => Promise<VisionResult>;
 
-/** The slice of a Workers KV namespace the rate limiter uses. */
-export interface KeyValueStore {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+/**
+ * Counts events per key within a time window. The production implementation
+ * is a Durable Object (rateLimiter.ts), which counts atomically; a key-value
+ * store cannot, and Workers KV additionally rejects more than one write per
+ * key per second.
+ */
+export interface RateLimiter {
+  /**
+   * Record one event for `key`. Resolves true when it is within `limit` for
+   * the current window, false when the limit is already used up. The window
+   * starts at the key's first event and lasts `windowSeconds`.
+   */
+  consume(key: string, limit: number, windowSeconds: number): Promise<boolean>;
+}
+
+/** In-memory limiter for tests and local development. Not shared between Worker instances. */
+export function createMemoryRateLimiter(now: () => number = Date.now): RateLimiter {
+  const windows = new Map<string, { count: number; resetAt: number }>();
+  return {
+    consume(key, limit, windowSeconds) {
+      const time = now();
+      let window = windows.get(key);
+      if (window === undefined || time >= window.resetAt) {
+        window = { count: 0, resetAt: time + windowSeconds * 1000 };
+        windows.set(key, window);
+      }
+      if (window.count >= limit) return Promise.resolve(false);
+      window.count += 1;
+      return Promise.resolve(true);
+    },
+  };
 }
 
 export interface IngestLimits {
   /** Photo requests allowed per client address per hour. */
   perClientPerHour: number;
-  /** Photo requests allowed in total per UTC day: a ceiling on spend. */
+  /** Photo requests allowed in total per 24 hours: a ceiling on spend. */
   perDay: number;
 }
 
@@ -75,10 +102,8 @@ export interface IngestDependencies {
   /** Omit to disable photo import; text import still works. */
   extract?: VisionExtractor;
   /** Required for photo import: without a counter there is no brake on cost. */
-  rateLimitStore?: KeyValueStore;
+  rateLimiter?: RateLimiter;
   limits?: IngestLimits;
-  /** Clock, injectable for tests. */
-  now?: () => number;
 }
 
 /** A catalogue item reference small enough to send to the client. */
@@ -164,15 +189,6 @@ function base64ByteLength(data: string): number {
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 
-async function overLimit(store: KeyValueStore, key: string, limit: number, ttlSeconds: number): Promise<boolean> {
-  const current = Number.parseInt((await store.get(key)) ?? '0', 10) || 0;
-  if (current >= limit) return true;
-  // KV has no atomic increment, so two simultaneous requests can both count
-  // as the same number. The limits are a cost brake, not an exact quota.
-  await store.put(key, String(current + 1), { expirationTtl: ttlSeconds });
-  return false;
-}
-
 /**
  * Build the API as a Hono app. Mount it under the Worker, or call
  * `app.request(...)` directly in tests.
@@ -180,7 +196,6 @@ async function overLimit(store: KeyValueStore, key: string, limit: number, ttlSe
 export function createIngestApp(dependencies: IngestDependencies) {
   const resolver = createRecipeResolver(dependencies.catalog);
   const limits = dependencies.limits ?? DEFAULT_LIMITS;
-  const now = dependencies.now ?? Date.now;
   const app = new Hono();
 
   const fail = (status: 400 | 403 | 413 | 415 | 422 | 429 | 502 | 503, code: string, message: string) =>
@@ -193,7 +208,7 @@ export function createIngestApp(dependencies: IngestDependencies) {
     c.json({
       ok: true,
       catalogSize: dependencies.catalog.length,
-      photoImport: dependencies.extract !== undefined && dependencies.rateLimitStore !== undefined,
+      photoImport: dependencies.extract !== undefined && dependencies.rateLimiter !== undefined,
     }),
   );
 
@@ -250,20 +265,22 @@ export function createIngestApp(dependencies: IngestDependencies) {
     }
     if (base64ByteLength(data) > MAX_IMAGE_BYTES) return fail(413, 'too_large', 'That photo is too large.');
 
-    const { extract, rateLimitStore } = dependencies;
-    if (extract === undefined || rateLimitStore === undefined) {
+    const { extract, rateLimiter } = dependencies;
+    if (extract === undefined || rateLimiter === undefined) {
       return fail(503, 'photo_import_unavailable', 'Photo import is not set up on this server.');
     }
 
-    const time = now();
-    const day = new Date(time).toISOString().slice(0, 10);
-    const hour = Math.floor(time / 3_600_000);
     const client = c.req.header('cf-connecting-ip') ?? 'unknown';
-    if (await overLimit(rateLimitStore, `ingest:client:${client}:${hour}`, limits.perClientPerHour, 7200)) {
-      return fail(429, 'rate_limited', 'Too many photos from this connection. Try again in an hour.');
-    }
-    if (await overLimit(rateLimitStore, `ingest:day:${day}`, limits.perDay, 172_800)) {
-      return fail(429, 'daily_limit', 'Photo import has reached its limit for today. Paste a list instead.');
+    try {
+      if (!(await rateLimiter.consume(`client:${client}`, limits.perClientPerHour, 3600))) {
+        return fail(429, 'rate_limited', 'Too many photos from this connection. Try again in an hour.');
+      }
+      if (!(await rateLimiter.consume('everyone', limits.perDay, 86_400))) {
+        return fail(429, 'daily_limit', 'Photo import has reached its limit for today. Paste a list instead.');
+      }
+    } catch {
+      // If the counter cannot be reached, do not spend: the limit is the only brake on cost.
+      return fail(503, 'limiter_unavailable', 'Photo import is busy right now. Try again shortly, or paste a list.');
     }
 
     let result: VisionResult;

@@ -388,15 +388,19 @@ catalogue does not contain.
 | --- | --- |
 | `worker/ingest.ts` | The API: validation, origin check, rate limits, label matching. No Cloudflare or model dependency, so it is fully unit-tested |
 | `worker/vision.ts` | The one model call, using the Anthropic SDK with a JSON schema for the reply |
+| `worker/rateLimiter.ts` | Durable Object that counts photo imports atomically |
 | `worker/index.ts` | Cloudflare Worker entry: serves the built app and answers `/api/*` |
 | `wrangler.jsonc` | Worker configuration |
 | `src/app/components/StashImport.tsx` | Import and review UI |
 
 Safeguards on the endpoint:
 
-- **Cost.** Photo import is refused unless a rate-limit store is configured.
-  Defaults are 20 photos per connection per hour and 500 per day in total;
-  both are counted approximately, as a brake rather than an exact quota.
+- **Cost.** Photo import is refused unless a rate limiter is available, and
+  nothing is spent if the limiter cannot be reached. Defaults are 20 photos
+  per connection per hour and 500 in total per 24 hours. Counting is done by a
+  Durable Object, so simultaneous requests are counted exactly. (A key-value
+  store was the first design; Workers KV rejects more than one write per key
+  per second, which would have failed simultaneous imports.)
 - **Abuse.** Requests from another website's pages are refused; there are no
   cross-origin headers. Images over 5 MB, other file types, malformed base64
   and oversized bodies are rejected before any model call.
@@ -427,22 +431,26 @@ same drawing, so its colours are very close but not bit-exact.
 Nothing has been deployed and no accounts or keys were created. To go live:
 
 ```sh
-npm run build
-npx wrangler kv namespace create RATE_LIMIT   # then add the printed id to wrangler.jsonc
-npx wrangler secret put ANTHROPIC_API_KEY
-npm run deploy
+npx wrangler secret put ANTHROPIC_API_KEY   # only needed for "Read a photo"
+npm run deploy                              # builds, then deploys
 ```
 
-Without the KV namespace and the key the app still deploys and works; only
-"Read a photo" reports that it is not switched on.
+The rate limiter's Durable Object is created by the deploy itself; there is no
+storage to set up by hand. Without the key the app still deploys and works;
+only "Read a photo" reports that it is not switched on.
 
 ### Verification
 
-- 231 unit tests. 33 are new: the API (validation, limits, origin check,
-  error mapping), label matching, PDF structure and card wording.
+- 237 unit tests. 39 are new: the API (validation, limits, origin check,
+  error mapping), label matching, PDF structure, card wording and text
+  wrapping.
 - The Worker was run in Cloudflare's local runtime (`wrangler dev`) and
   exercised with HTTP requests: health, text import, photo import refused
   without a key, foreign origin refused, static app, single-page fallback.
+- The rate limiter was tested in that runtime with 30 simultaneous photo
+  imports from one client against a limit of 20: exactly 20 were let through
+  and 10 refused, with no server errors. (The model endpoint was pointed at a
+  dead local port for this, so no real model call was made.)
 - `npm run worker:check` validates the configuration and bundles the Worker.
 - `npm run test:e2e` now also imports from a pasted list, checks the photo
   upload is a real JPEG, drives the review screen against a stand-in server,
@@ -457,8 +465,11 @@ Without the KV namespace and the key the app still deploys and works; only
   the installed SDK and is tested with a stand-in. How well it reads real
   racks, small labels or handwriting is unknown until it is run with a key.
 - **Not deployed.** No Worker, KV namespace or secret exists.
-- **Rate limits are approximate** and keyed by network address, so people
-  behind one address share an allowance. There are no user accounts.
+- **Rate limits are keyed by network address**, so people behind one address
+  share an allowance. There are no user accounts.
+- **Durable Objects have not been exercised on Cloudflare itself**, only in
+  the local runtime. Check your plan's Durable Object allowance before relying
+  on it.
 - **The catalogue ships inside the Worker**, so a catalogue change needs a
   redeploy. The D1 schema from Phase 2 is not wired up yet.
 - **Semantic region detection** ("cloak highlights") from the specification's

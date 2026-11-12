@@ -5,6 +5,7 @@ import { createMatchSolver, predictMix } from '../color/index';
 import type { CatalogItem } from '../color/types';
 import { summarizeMatch } from '../match/matchSummary';
 import { buildCardEntries } from './cardEntries';
+import { wrapLines } from './cardLayout';
 import { buildImagePdf } from './pdf';
 
 const decode = (bytes: Uint8Array) => new TextDecoder('latin1').decode(bytes);
@@ -147,5 +148,39 @@ describe('buildCardEntries', () => {
     const pins = [1, 2, 3].map((number) => ({ ...pin(red.color, [red.id]), number }));
     expect(buildCardEntries(pins).map((entry) => entry.number)).toEqual([1, 2, 3]);
     expect(buildCardEntries([])).toEqual([]);
+  });
+});
+
+describe('wrapLines', () => {
+  /** Ten units per character: predictable widths without a canvas. */
+  const measure = (text: string) => text.length * 10;
+
+  it('keeps short text on one line', () => {
+    expect(wrapLines('Mephiston Red', 200, measure)).toEqual(['Mephiston Red']);
+    expect(wrapLines('', 200, measure)).toEqual([]);
+    expect(wrapLines('   ', 200, measure)).toEqual([]);
+  });
+
+  it('never drops any part of text that has no line limit', () => {
+    const recipe = '4 parts Bold Titanium White : 1 part Mechanicus Standard Grey';
+    for (const width of [600, 300, 200, 120, 60]) {
+      const lines = wrapLines(recipe, width, measure);
+      expect(lines.join(' ').replace(/\s+/g, '')).toBe(recipe.replace(/\s+/g, ''));
+      expect(lines.every((line) => measure(line) <= width)).toBe(true);
+      expect(lines.some((line) => line.includes('…'))).toBe(false);
+    }
+    expect(wrapLines(recipe, 320, measure)).toEqual(['4 parts Bold Titanium White : 1', 'part Mechanicus Standard Grey']);
+  });
+
+  it('splits a single word that is wider than the line instead of overflowing', () => {
+    expect(wrapLines('Supercalifragilistic', 80, measure)).toEqual(['Supercal', 'ifragili', 'stic']);
+  });
+
+  it('cuts with an ellipsis only when a line limit is given', () => {
+    const text = 'one two three four five six seven eight';
+    expect(wrapLines(text, 100, measure, { maxLines: 2 })).toEqual(['one two', 'three fou…']);
+    expect(wrapLines(text, 100, measure, { maxLines: 2 }).every((line) => measure(line) <= 100)).toBe(true);
+    expect(wrapLines('one two', 100, measure, { maxLines: 2 })).toEqual(['one two']);
+    expect(wrapLines(text, 100, measure, { maxLines: 1 })).toEqual(['one two…']);
   });
 });

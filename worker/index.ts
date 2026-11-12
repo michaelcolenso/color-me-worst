@@ -4,21 +4,27 @@
  *
  * Bindings (see wrangler.jsonc):
  *   ASSETS             the built app in dist/
- *   ANTHROPIC_API_KEY  secret; photo import is off without it
- *   RATE_LIMIT         KV namespace; photo import is off without it
- *   VISION_MODEL       optional model override
+ *   RATE_LIMITER        Durable Object namespace that counts photo imports
+ *   ANTHROPIC_API_KEY   secret; photo import is off without it
+ *   VISION_MODEL        optional model override
+ *   ANTHROPIC_BASE_URL  optional; route model calls through a gateway
  */
 
 import type { CatalogBundle } from '../src/lib/catalog/seedBuilder';
 import seedJson from '../src/data/catalogSeed.json';
-import { createIngestApp, type KeyValueStore } from './ingest';
+import { createIngestApp } from './ingest';
+import { createDurableRateLimiter, type RateLimitNamespace } from './rateLimiter';
 import { createClaudeVisionExtractor } from './vision';
+
+// The runtime finds Durable Object classes among the entry module's exports.
+export { RateLimitCounter } from './rateLimiter';
 
 interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
+  RATE_LIMITER?: RateLimitNamespace;
   ANTHROPIC_API_KEY?: string;
-  RATE_LIMIT?: KeyValueStore;
   VISION_MODEL?: string;
+  ANTHROPIC_BASE_URL?: string;
 }
 
 const catalog = (seedJson as unknown as CatalogBundle).items;
@@ -35,10 +41,11 @@ export default {
             extract: createClaudeVisionExtractor({
               apiKey: env.ANTHROPIC_API_KEY,
               ...(env.VISION_MODEL ? { model: env.VISION_MODEL } : {}),
+              ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
             }),
           }
         : {}),
-      ...(env.RATE_LIMIT ? { rateLimitStore: env.RATE_LIMIT } : {}),
+      ...(env.RATE_LIMITER ? { rateLimiter: createDurableRateLimiter(env.RATE_LIMITER) } : {}),
     });
     return app.fetch(request);
   },

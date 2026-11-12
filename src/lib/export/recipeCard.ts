@@ -9,6 +9,7 @@
 
 import type { PixelBuffer } from '../image/pixelMath';
 import type { CardEntry } from './cardEntries';
+import { wrapLines } from './cardLayout';
 import { buildImagePdf } from './pdf';
 
 export interface RecipeCardInput {
@@ -35,27 +36,42 @@ const INK = '#1c1d21';
 const MUTED = '#5d6068';
 const SURROUND = '#7b7b7b';
 
-function wrapText(context: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let line = '';
-  for (const word of words) {
-    const candidate = line === '' ? word : `${line} ${word}`;
-    if (context.measureText(candidate).width <= maxWidth || line === '') line = candidate;
-    else {
-      lines.push(line);
-      line = word;
-    }
-  }
-  if (line !== '') lines.push(line);
-  if (lines.length > maxLines) {
-    const kept = lines.slice(0, maxLines);
-    let last = kept[maxLines - 1] as string;
-    while (last.length > 1 && context.measureText(`${last}…`).width > maxWidth) last = last.slice(0, -1);
-    kept[maxLines - 1] = `${last}…`;
-    return kept;
-  }
-  return lines;
+const TITLE_FONT = `700 24px ${FONT}`;
+const DETAIL_FONT = `400 17px ${FONT}`;
+const NOTE_FONT = `500 18px ${FONT}`;
+const TITLE_LINE = 30;
+const DETAIL_LINE = 21;
+const NOTE_MAX_WIDTH = 330;
+
+/** Wrap with the context's current font. */
+function wrap(context: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines?: number): string[] {
+  return wrapLines(text, maxWidth, (value) => context.measureText(value).width, maxLines === undefined ? {} : { maxLines });
+}
+
+interface RowLayout {
+  titleLines: string[];
+  detailLines: string[];
+  note: string;
+  height: number;
+}
+
+/**
+ * Work out each row's text and height before drawing. The title carries the
+ * item or the mix recipe, which is the one thing on the card that must be
+ * complete, so it wraps onto as many lines as it needs and the row grows.
+ */
+function layoutRows(context: CanvasRenderingContext2D, entries: readonly CardEntry[], textX: number): RowLayout[] {
+  return entries.map((entry) => {
+    context.font = NOTE_FONT;
+    const note = wrap(context, entry.note, NOTE_MAX_WIDTH, 1)[0] ?? '';
+    const textWidth = CARD_WIDTH - PADDING - textX - Math.min(NOTE_MAX_WIDTH, context.measureText(note).width) - 28;
+    context.font = TITLE_FONT;
+    const titleLines = wrap(context, entry.title, textWidth);
+    context.font = DETAIL_FONT;
+    const detailLines = wrap(context, entry.detail, textWidth, 3);
+    const textHeight = 20 + titleLines.length * TITLE_LINE + detailLines.length * DETAIL_LINE + 12;
+    return { titleLines, detailLines, note, height: Math.max(ROW_HEIGHT, textHeight) };
+  });
 }
 
 /** Draw the card and return its canvas. */
@@ -70,7 +86,15 @@ export function renderRecipeCard(input: RecipeCardInput): HTMLCanvasElement {
   const photoY = PADDING + headerHeight;
   const rowsY = photoY + photoHeight + 36;
   const footerHeight = 84;
-  const height = rowsY + Math.max(1, entries.length) * ROW_HEIGHT + footerHeight + PADDING;
+  const swatchX = PADDING + 52;
+  const textX = swatchX + SWATCH_WIDTH + 16 + 28;
+
+  // Rows are measured first, because their heights decide the canvas height.
+  const measuring = document.createElement('canvas').getContext('2d');
+  if (measuring === null) throw new Error('2D canvas is not available');
+  const rows = layoutRows(measuring, entries, textX);
+  const rowsHeight = entries.length === 0 ? ROW_HEIGHT : rows.reduce((sum, row) => sum + row.height, 0);
+  const height = rowsY + rowsHeight + footerHeight + PADDING;
 
   const canvas = document.createElement('canvas');
   canvas.width = CARD_WIDTH * CARD_SCALE;
@@ -86,10 +110,10 @@ export function renderRecipeCard(input: RecipeCardInput): HTMLCanvasElement {
   // Header
   context.fillStyle = INK;
   context.font = `700 40px ${FONT}`;
-  context.fillText(wrapText(context, input.title, contentWidth, 1)[0] ?? '', PADDING, PADDING + 44);
+  context.fillText(wrap(context, input.title, contentWidth, 1)[0] ?? '', PADDING, PADDING + 44);
   context.fillStyle = MUTED;
   context.font = `400 20px ${FONT}`;
-  context.fillText(wrapText(context, input.subtitle, contentWidth, 1)[0] ?? '', PADDING, PADDING + 80);
+  context.fillText(wrap(context, input.subtitle, contentWidth, 1)[0] ?? '', PADDING, PADDING + 80);
 
   // Photo, drawn through a scratch canvas so it can be scaled smoothly.
   const scratch = document.createElement('canvas');
@@ -135,8 +159,9 @@ export function renderRecipeCard(input: RecipeCardInput): HTMLCanvasElement {
     context.font = `400 22px ${FONT}`;
     context.fillText('No pins placed.', PADDING, rowsY + 56);
   }
+  let top = rowsY;
   entries.forEach((entry, index) => {
-    const top = rowsY + index * ROW_HEIGHT;
+    const row = rows[index] as RowLayout;
     context.strokeStyle = '#d5d2cb';
     context.lineWidth = 1;
     context.beginPath();
@@ -148,8 +173,8 @@ export function renderRecipeCard(input: RecipeCardInput): HTMLCanvasElement {
     context.font = `800 26px ${FONT}`;
     context.fillText(String(entry.number), PADDING, top + 62);
 
-    // Swatch: target on the left, match on the right, sharing one edge.
-    const swatchX = PADDING + 52;
+    // Swatch: target on the left, match on the right, sharing one edge. It
+    // stays at the top of the row however tall the text makes the row.
     const swatchY = top + (ROW_HEIGHT - SWATCH_HEIGHT - 16) / 2;
     context.fillStyle = SURROUND;
     context.fillRect(swatchX, swatchY, SWATCH_WIDTH + 16, SWATCH_HEIGHT + 16);
@@ -161,35 +186,35 @@ export function renderRecipeCard(input: RecipeCardInput): HTMLCanvasElement {
       context.fillRect(swatchX + 8 + half, swatchY + 8, half, SWATCH_HEIGHT);
     }
 
-    const textX = swatchX + SWATCH_WIDTH + 16 + 28;
-    context.font = `500 18px ${FONT}`;
-    const noteWidth = Math.min(330, context.measureText(entry.note).width);
-    const textWidth = CARD_WIDTH - PADDING - textX - noteWidth - 28;
-
     context.fillStyle = INK;
-    context.font = `700 24px ${FONT}`;
-    context.fillText(wrapText(context, entry.title, textWidth, 1)[0] ?? '', textX, top + 44);
+    context.font = TITLE_FONT;
+    row.titleLines.forEach((line, lineIndex) => {
+      context.fillText(line, textX, top + 44 + lineIndex * TITLE_LINE);
+    });
+    const detailY = top + 44 + (row.titleLines.length - 1) * TITLE_LINE + 26;
     context.fillStyle = MUTED;
-    context.font = `400 17px ${FONT}`;
-    wrapText(context, entry.detail, textWidth, 2).forEach((line, lineIndex) => {
-      context.fillText(line, textX, top + 70 + lineIndex * 21);
+    context.font = DETAIL_FONT;
+    row.detailLines.forEach((line, lineIndex) => {
+      context.fillText(line, textX, detailY + lineIndex * DETAIL_LINE);
     });
 
     context.fillStyle = INK;
-    context.font = `500 18px ${FONT}`;
+    context.font = NOTE_FONT;
     context.textAlign = 'right';
-    context.fillText(wrapText(context, entry.note, 330, 1)[0] ?? '', CARD_WIDTH - PADDING, top + 44);
+    context.fillText(row.note, CARD_WIDTH - PADDING, top + 44);
     context.fillStyle = MUTED;
     context.font = `400 15px ${FONT}`;
     context.fillText(`target ${entry.target.hex}`, CARD_WIDTH - PADDING, top + 70);
     context.textAlign = 'left';
+
+    top += row.height;
   });
 
   // Footer
-  const footerY = rowsY + Math.max(1, entries.length) * ROW_HEIGHT + 34;
+  const footerY = rowsY + rowsHeight + 34;
   context.fillStyle = MUTED;
   context.font = `400 15px ${FONT}`;
-  wrapText(context, input.footnote, contentWidth, 3).forEach((line, lineIndex) => {
+  wrap(context, input.footnote, contentWidth, 3).forEach((line, lineIndex) => {
     context.fillText(line, PADDING, footerY + lineIndex * 21);
   });
 

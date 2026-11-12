@@ -8,11 +8,12 @@ import {
   MAX_LABELS,
   MAX_TEXT_LENGTH,
   createIngestApp,
+  createMemoryRateLimiter,
   matchLabels,
   type IngestDependencies,
   type IngestError,
   type IngestResponse,
-  type KeyValueStore,
+  type RateLimiter,
   type VisionExtractor,
 } from './ingest';
 
@@ -22,17 +23,15 @@ const resolver = createRecipeResolver(catalog);
 /** A tiny valid base64 payload standing in for an image. */
 const IMAGE = { mediaType: 'image/jpeg', data: 'AAAA' };
 
-function memoryStore(): KeyValueStore & { data: Map<string, string>; ttls: Map<string, number | undefined> } {
-  const data = new Map<string, string>();
-  const ttls = new Map<string, number | undefined>();
+/** A limiter that records what it was asked, on top of the real in-memory one. */
+function recordingLimiter(now: () => number = Date.now): RateLimiter & { keys: string[] } {
+  const inner = createMemoryRateLimiter(now);
+  const keys: string[] = [];
   return {
-    data,
-    ttls,
-    get: (key) => Promise.resolve(data.get(key) ?? null),
-    put: (key, value, options) => {
-      data.set(key, value);
-      ttls.set(key, options?.expirationTtl);
-      return Promise.resolve();
+    keys,
+    consume(key, limit, windowSeconds) {
+      keys.push(`${key}|${limit}|${windowSeconds}`);
+      return inner.consume(key, limit, windowSeconds);
     },
   };
 }
@@ -52,21 +51,15 @@ function setup(overrides: Overrides = {}) {
       ],
     });
   };
-  const store = memoryStore();
-  const app = createIngestApp({
-    catalog,
-    extract,
-    rateLimitStore: store,
-    now: () => Date.UTC(2026, 0, 15, 10),
-    ...overrides,
-  } as IngestDependencies);
+  const limiter = recordingLimiter();
+  const app = createIngestApp({ catalog, extract, rateLimiter: limiter, ...overrides } as IngestDependencies);
   const post = (body: unknown, headers: Record<string, string> = {}) =>
     app.request('http://app.test/api/ingest', {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body: typeof body === 'string' ? body : JSON.stringify(body),
     });
-  return { app, post, calls, store };
+  return { app, post, calls, limiter };
 }
 
 const errorCode = async (response: Response) => ((await response.json()) as IngestError).error.code;
@@ -148,7 +141,7 @@ describe('label matching', () => {
 
 describe('POST /api/ingest with text', () => {
   it('resolves a pasted list without calling the model', async () => {
-    const { post, calls, store } = setup();
+    const { post, calls, limiter } = setup();
     const response = await post({ text: 'Mephiston Red\nVallejo 70.950 Black, Unicorn Tears\nIvory' });
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
@@ -170,11 +163,11 @@ describe('POST /api/ingest with text', () => {
       sku: 'mephiston-red',
     });
     expect(calls).toHaveLength(0);
-    expect(store.data.size).toBe(0); // text is free, so it is not rate limited
+    expect(limiter.keys).toEqual([]); // text is free, so it is not rate limited
   });
 
   it('works when photo import is not configured', async () => {
-    const { post } = setup({ extract: undefined, rateLimitStore: undefined });
+    const { post } = setup({ extract: undefined, rateLimiter: undefined });
     expect((await post({ text: 'Nuln Oil' })).status).toBe(200);
   });
 
@@ -197,8 +190,8 @@ describe('POST /api/ingest with an image', () => {
     expect(calls).toEqual([IMAGE]);
   });
 
-  it('is unavailable without a label reader or without a rate-limit store', async () => {
-    for (const overrides of [{ extract: undefined }, { rateLimitStore: undefined }]) {
+  it('is unavailable without a label reader or without a rate limiter', async () => {
+    for (const overrides of [{ extract: undefined }, { rateLimiter: undefined }]) {
       const { post } = setup(overrides);
       const response = await post({ image: IMAGE });
       expect(response.status).toBe(503);
@@ -207,7 +200,7 @@ describe('POST /api/ingest with an image', () => {
   });
 
   it('limits photos per client per hour', async () => {
-    const { post, calls, store } = setup({ limits: { perClientPerHour: 2, perDay: 100 } });
+    const { post, calls, limiter } = setup({ limits: { perClientPerHour: 2, perDay: 100 } });
     const from = (ip: string) => post({ image: IMAGE }, { 'cf-connecting-ip': ip });
     expect((await from('203.0.113.7')).status).toBe(200);
     expect((await from('203.0.113.7')).status).toBe(200);
@@ -216,7 +209,8 @@ describe('POST /api/ingest with an image', () => {
     expect(await errorCode(blocked)).toBe('rate_limited');
     expect((await from('198.51.100.9')).status).toBe(200); // a different client is unaffected
     expect(calls).toHaveLength(3); // the blocked request never reached the model
-    expect([...store.ttls.values()].every((ttl) => typeof ttl === 'number' && ttl > 0)).toBe(true);
+    expect(limiter.keys[0]).toBe('client:203.0.113.7|2|3600');
+    expect(limiter.keys[1]).toBe('everyone|100|86400');
   });
 
   it('caps total photos per day across all clients', async () => {
@@ -230,13 +224,33 @@ describe('POST /api/ingest with an image', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('starts a fresh allowance in the next hour', async () => {
+  it('starts a fresh allowance once the hour has passed', async () => {
     let time = Date.UTC(2026, 0, 15, 10, 30);
-    const { post } = setup({ limits: { perClientPerHour: 1, perDay: 100 }, now: () => time });
+    const { post } = setup({ limits: { perClientPerHour: 1, perDay: 100 }, rateLimiter: createMemoryRateLimiter(() => time) });
     expect((await post({ image: IMAGE })).status).toBe(200);
     expect((await post({ image: IMAGE })).status).toBe(429);
-    time = Date.UTC(2026, 0, 15, 11, 1);
+    time += 59 * 60 * 1000;
+    expect((await post({ image: IMAGE })).status).toBe(429);
+    time += 2 * 60 * 1000;
     expect((await post({ image: IMAGE })).status).toBe(200);
+  });
+
+  it('counts simultaneous requests exactly', async () => {
+    const { post, calls } = setup({ limits: { perClientPerHour: 5, perDay: 100 } });
+    const responses = await Promise.all(Array.from({ length: 12 }, () => post({ image: IMAGE }, { 'cf-connecting-ip': '203.0.113.7' })));
+    const statuses = responses.map((response) => response.status);
+    expect(statuses.filter((status) => status === 200)).toHaveLength(5);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(7);
+    expect(calls).toHaveLength(5);
+  });
+
+  it('does not spend when the limiter itself fails', async () => {
+    const broken: RateLimiter = { consume: () => Promise.reject(new Error('KV PUT failed: 429 Too Many Requests')) };
+    const { post, calls } = setup({ rateLimiter: broken });
+    const response = await post({ image: IMAGE });
+    expect(response.status).toBe(503);
+    expect(await errorCode(response)).toBe('limiter_unavailable');
+    expect(calls).toHaveLength(0);
   });
 
   it('maps label-reader outcomes to clear errors', async () => {
@@ -260,7 +274,7 @@ describe('POST /api/ingest with an image', () => {
   });
 
   it('validates the image before spending anything', async () => {
-    const { post, calls, store } = setup();
+    const { post, calls, limiter } = setup();
     const bad: Array<[unknown, number, string]> = [
       [{ image: { mediaType: 'image/svg+xml', data: 'AAAA' } }, 415, 'unsupported_image'],
       [{ image: { mediaType: 'image/png', data: 'data:image/png;base64,AAAA' } }, 400, 'invalid_request'],
@@ -275,7 +289,7 @@ describe('POST /api/ingest with an image', () => {
       expect(await errorCode(response)).toBe(code);
     }
     expect(calls).toHaveLength(0);
-    expect(store.data.size).toBe(0);
+    expect(limiter.keys).toEqual([]);
   });
 });
 
