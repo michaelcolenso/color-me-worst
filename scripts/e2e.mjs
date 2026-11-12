@@ -220,11 +220,24 @@ async function run(label, viewport) {
     const files = JSON.parse(/const PRECACHE = (\[.*?\]);/.exec(source)[1]);
     const missing = [];
     for (const file of files) if (!(await caches.match(file))) missing.push(file);
-    return { files, missing };
+    const stored = [];
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      for (const request of await cache.keys()) {
+        const response = await cache.match(request);
+        stored.push(`${name} ${new URL(request.url).pathname} origin=${request.headers.get('origin')} vary=${response?.headers.get('vary')}`);
+      }
+    }
+    return { files, missing, stored };
   });
   assert.ok(precache.files.some((file) => /\/assets\/index-.*\.js$/.test(file)), 'the app bundle is in the precache list');
   assert.ok(precache.files.some((file) => /\/assets\/imageWorker-.*\.js$/.test(file)), 'the image worker is in the precache list');
-  assert.deepEqual(precache.missing, [], 'every listed file was cached at install');
+  assert.deepEqual(precache.missing, [], `every listed file was cached at install; cache holds:\n${precache.stored.join('\n')}`);
+  // The page has reloaded under the worker's control by now. Its script and
+  // style requests carry an Origin header; they must have been answered from
+  // the install-time copies rather than re-downloaded and stored again.
+  const refetched = precache.stored.filter((entry) => !entry.includes('origin=null'));
+  assert.deepEqual(refetched, [], 'page requests were served from the precache');
   await context.setOffline(true);
   await page.reload();
   await page.getByRole('heading', { name: 'Match colours from a photo' }).waitFor();

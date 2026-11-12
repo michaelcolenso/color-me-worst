@@ -18,6 +18,15 @@
  * deleted on activation.
  */
 const PRECACHE = self.__PRECACHE_MANIFEST__;
+
+/*
+ * Lookups ignore the response's Vary header. Many static hosts send
+ * "Vary: Origin", and the page's own script and style requests carry an
+ * Origin header while the install-time downloads do not, so a strict lookup
+ * would miss every precached script. These are same-origin static files whose
+ * bytes do not depend on any request header, so ignoring Vary is safe.
+ */
+const LOOKUP = { ignoreVary: true };
 const CACHE = `color-me-worst-${self.__PRECACHE_VERSION__}`;
 
 self.addEventListener('install', (event) => {
@@ -52,13 +61,13 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE).then((cache) => cache.put('/', copy));
           return response;
         })
-        .catch(() => caches.match('/').then((cached) => cached ?? Response.error())),
+        .catch(() => caches.match('/', LOOKUP).then((cached) => cached ?? Response.error())),
     );
     return;
   }
 
   event.respondWith(
-    caches.match(request).then((cached) => {
+    caches.match(request, LOOKUP).then((cached) => {
       if (cached) return cached;
       return fetch(request).then((response) => {
         if (response.ok) {
