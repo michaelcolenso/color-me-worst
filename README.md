@@ -269,7 +269,7 @@ correct on the fly.
 
 ### Verification
 
-- 50 unit tests on synthetic images with known answers (180 in the whole suite).
+- 51 unit tests on synthetic images with known answers (181 in the whole suite).
 - `npm run test:browser` decodes a PNG, corrects it and extracts a palette
   inside a real Web Worker in headless Chromium, and checks the worker returns
   exactly what the main thread computes.

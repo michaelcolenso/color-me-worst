@@ -52,6 +52,8 @@ export function createImageWorkerClient(worker: WorkerLike): ImageWorkerClient {
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let terminated = false;
+  /** Set once the worker itself has failed; it will never answer again. */
+  let fatal: Error | undefined;
 
   const failAll = (reason: Error) => {
     for (const entry of pending.values()) entry.reject(reason);
@@ -67,13 +69,24 @@ export function createImageWorkerClient(worker: WorkerLike): ImageWorkerClient {
     else entry.reject(toError(response.error));
   });
   // A worker-level error (script failed to load, uncaught exception) cannot
-  // be tied to one request, so every waiting caller is told.
+  // be tied to one request, so every waiting caller is told. The worker is
+  // then treated as dead: later calls reject at once instead of waiting for
+  // an answer that will never come.
   worker.addEventListener('error', (event) => {
-    failAll(new Error(`Image worker failed: ${event.message ?? 'unknown error'}`));
+    fatal = new Error(`Image worker failed: ${event.message ?? 'unknown error'}`);
+    failAll(fatal);
+    if (!terminated) {
+      terminated = true;
+      worker.terminate();
+    }
   });
 
   const call = <K extends keyof ImageWorkerResults>(body: RequestBody & { type: K }): Promise<ImageWorkerResults[K]> =>
     new Promise((resolve, reject) => {
+      if (fatal !== undefined) {
+        reject(fatal);
+        return;
+      }
       if (terminated) {
         reject(new Error('Image worker has been terminated'));
         return;

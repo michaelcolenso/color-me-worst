@@ -634,6 +634,22 @@ describe('paletteExtractor', () => {
     }
   });
 
+  it('is not fooled by a repeating texture whose period matches the sampling grid', () => {
+    // 600 x 600 gives a sampling stride of 5; red sits on every fifth column.
+    const striped = makeImage(600, 600, (x) => (x % 5 === 2 ? [200, 30, 30] : [30, 30, 200]));
+    const result = extractPalette(striped, { count: 4 });
+    expect(result.swatches.map((swatch) => swatch.color.hex)).toEqual(['#1e1ec8', '#c81e1e']);
+    expect(result.swatches[0]?.population).toBeCloseTo(0.8, 1);
+    for (const phase of [0, 1, 3, 4]) {
+      const shifted = makeImage(600, 600, (x) => (x % 5 === phase ? [200, 30, 30] : [30, 30, 200]));
+      expect(extractPalette(shifted, { count: 4 }).swatches[0]?.color.hex).toBe('#1e1ec8');
+    }
+    const light = estimateIlluminant(striped, { estimator: 'gray_world', maxSamples: 14_400 });
+    // 80 % blue, 20 % red: blue must dominate the estimate.
+    expect(light[2]).toBe(1);
+    expect(light[0]).toBeLessThan(0.5);
+  });
+
   it('ignores transparent pixels and fails when nothing is opaque', () => {
     const image = makeImage(60, 60, (x) => (x < 30 ? [255, 0, 255, 0] : [40, 90, 160]));
     const result = extractPalette(image, { count: 5 });
@@ -788,6 +804,19 @@ describe('image worker', () => {
     const lost = first.extractPalette(image);
     crashing.crash('script failed to load');
     await expect(lost).rejects.toThrow(/Image worker failed: script failed to load/);
+
+    // After a fatal error the worker is dead: later calls fail at once
+    // rather than waiting for a reply that will never come.
+    expect(crashing.isTerminated()).toBe(true);
+    await expect(first.autoWhiteBalance(image)).rejects.toThrow(/Image worker failed: script failed to load/);
+    expect(crashing.posted).toHaveLength(1);
+
+    // The same holds when the worker fails before anything was asked of it.
+    const deadOnArrival = fakeWorker();
+    const second = createImageWorkerClient(deadOnArrival.worker);
+    deadOnArrival.crash('404');
+    await expect(second.extractPalette(image)).rejects.toThrow(/Image worker failed: 404/);
+    expect(deadOnArrival.posted).toHaveLength(0);
 
     const fake = fakeWorker();
     const client = createImageWorkerClient(fake.worker);

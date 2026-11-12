@@ -41,6 +41,7 @@ import {
   XYZ_TO_RGB,
   applyMatrix,
   assertPixelBuffer,
+  createRandom,
   invertMatrix,
   linearToSrgb8,
   multiplyMatrices,
@@ -223,7 +224,7 @@ export interface AutoWhiteBalanceOptions {
   estimator?: IlluminantEstimator;
   /** Minkowski norm for `shades_of_gray`. Default 6. */
   norm?: number;
-  /** Upper limit on pixels examined; the image is sampled on a regular grid. Default 250 000. */
+  /** Upper limit on pixels examined; larger images are sampled on a jittered grid. Default 250 000. */
   maxSamples?: number;
   /** Default `bradford`. */
   method?: AdaptationMethod;
@@ -242,14 +243,20 @@ export function estimateIlluminant(image: PixelBuffer, options: AutoWhiteBalance
   const { data, width, height } = image;
   const maxSamples = Math.max(1, options.maxSamples ?? 250_000);
   const stride = Math.max(1, Math.ceil(Math.sqrt((width * height) / maxSamples)));
+  // One pixel at a seeded random position per grid cell, so a repeating
+  // texture cannot line up with the sampling grid. Deterministic.
+  const random = createRandom(1);
+  const jitter = stride === 1 ? () => 0 : () => Math.floor(random() * stride);
 
   let estimate: Vec3;
   if (estimator === 'white_patch') {
     // 99th percentile per channel: robust to a few stray bright pixels.
     const histograms = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)] as const;
     let count = 0;
-    for (let y = 0; y < height; y += stride) {
-      for (let x = 0; x < width; x += stride) {
+    for (let cellY = 0; cellY < height; cellY += stride) {
+      for (let cellX = 0; cellX < width; cellX += stride) {
+        const x = Math.min(width - 1, cellX + jitter());
+        const y = Math.min(height - 1, cellY + jitter());
         const offset = (y * width + x) * 4;
         if ((data[offset + 3] as number) < 128) continue;
         const r = data[offset] as number;
@@ -279,8 +286,10 @@ export function estimateIlluminant(image: PixelBuffer, options: AutoWhiteBalance
     let sumG = 0;
     let sumB = 0;
     let count = 0;
-    for (let y = 0; y < height; y += stride) {
-      for (let x = 0; x < width; x += stride) {
+    for (let cellY = 0; cellY < height; cellY += stride) {
+      for (let cellX = 0; cellX < width; cellX += stride) {
+        const x = Math.min(width - 1, cellX + jitter());
+        const y = Math.min(height - 1, cellY + jitter());
         const offset = (y * width + x) * 4;
         if ((data[offset + 3] as number) < 128) continue;
         const r = data[offset] as number;
