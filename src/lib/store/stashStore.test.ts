@@ -304,6 +304,26 @@ describe('StashStore: sync bookkeeping', () => {
     expect(store.queryCatalog({ owned: true }).rows.some((row) => row.item.id === bone)).toBe(false);
   });
 
+  it('resolves several versions of one item in a single download to the newest', async () => {
+    const store = await openSeeded();
+    const red = idOf(store, 'mephiston');
+    const changed = await store.applyRemote([
+      { itemId: red, quantity: 2, updatedAt: 5000, deleted: false },
+      { itemId: red, quantity: 1, updatedAt: 4000, deleted: true }, // older, listed later
+    ]);
+    expect(changed).toBe(1);
+    expect(store.isOwned(red)).toBe(true);
+    expect(store.getStashEntry(red)).toMatchObject({ quantity: 2, updatedAt: 5000, deleted: false, dirty: false });
+
+    const oil = idOf(store, 'nuln oil');
+    await store.applyRemote([
+      { itemId: oil, quantity: 1, updatedAt: 4000, deleted: false },
+      { itemId: oil, quantity: 1, updatedAt: 5000, deleted: true }, // newer, listed later
+    ]);
+    expect(store.isOwned(oil)).toBe(false);
+    expect(store.getStashEntry(oil)?.updatedAt).toBe(5000);
+  });
+
   it('keeps stash entries for items missing from a newer catalogue', async () => {
     const store = await openSeeded();
     const red = idOf(store, 'mephiston');
@@ -378,6 +398,59 @@ describe('StashStore: persistence', () => {
     expect(second.queryCatalog({ owned: true }).rows.map((row) => row.item.id)).toEqual([red]);
     expect(second.pendingChanges().map((entry) => entry.itemId)).toEqual([oil]);
     second.close();
+  });
+
+  it('persists changes in the order they were made, even when a subscriber edits the stash', async () => {
+    const factory = new IDBFactory();
+    let clock = 1000;
+    const first = await StashStore.open(await createIndexedDbAdapter({ factory, name: 'reentrant' }), {
+      now: () => clock,
+    });
+    await first.importCatalog(seed.items, seed.revision);
+    const red = idOf(first, 'mephiston');
+
+    // A subscriber that immediately removes the item that was just added.
+    let reacted = false;
+    let nested: Promise<void> | undefined;
+    first.subscribe(() => {
+      if (reacted || !first.isOwned(red)) return;
+      reacted = true;
+      nested = first.setOwned(red, false);
+    });
+    await first.setOwned(red, true);
+    await nested;
+    expect(first.isOwned(red)).toBe(false);
+    first.close();
+
+    const second = await StashStore.open(await createIndexedDbAdapter({ factory, name: 'reentrant' }));
+    expect(second.isOwned(red)).toBe(false);
+    expect(second.getStashEntry(red)).toMatchObject({ deleted: true, updatedAt: 1001 });
+    second.close();
+
+    // Un-awaited back-to-back edits land in call order too.
+    clock = 2000;
+    const third = await StashStore.open(await createIndexedDbAdapter({ factory, name: 'reentrant' }), {
+      now: () => clock,
+    });
+    const writes = [third.setOwned(red, true), third.setOwned(red, false), third.setOwned(red, true, { quantity: 4 })];
+    await Promise.all(writes);
+    third.close();
+    const fourth = await StashStore.open(await createIndexedDbAdapter({ factory, name: 'reentrant' }));
+    expect(fourth.getStashEntry(red)).toMatchObject({ deleted: false, quantity: 4 });
+    fourth.close();
+  });
+
+  it('keeps accepting writes after one fails', async () => {
+    const adapter = createMemoryAdapter();
+    const store = await openSeeded(adapter);
+    const red = idOf(store, 'mephiston');
+    const original = adapter.putStash.bind(adapter);
+    let fail = true;
+    adapter.putStash = (entries) => (fail ? Promise.reject(new Error('disk full')) : original(entries));
+    await expect(store.setOwned(red, true)).rejects.toThrow('disk full');
+    fail = false;
+    await store.setOwned(red, true, { quantity: 2 });
+    expect((await adapter.loadStash()).find((entry) => entry.itemId === red)?.quantity).toBe(2);
   });
 
   it('replaces the stored catalogue atomically and keeps databases separate', async () => {

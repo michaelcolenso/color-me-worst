@@ -260,6 +260,8 @@ export class StashStore {
   private readonly listeners = new Set<() => void>();
   private solver: MatchSolver | undefined;
   private versionValue = 0;
+  /** Tail of the storage write queue; see {@link StashStore.enqueueWrite}. */
+  private writeQueue: Promise<void> = Promise.resolve();
 
   private constructor(
     private readonly adapter: StorageAdapter,
@@ -312,7 +314,7 @@ export class StashStore {
       if (ids.has(item.id)) throw new Error(`Duplicate catalogue id "${item.id}"`);
       ids.add(item.id);
     }
-    await this.adapter.replaceCatalog(items, revision);
+    await this.enqueueWrite(() => this.adapter.replaceCatalog(items, revision));
     this.indexCatalog(items, revision);
     this.changed();
   }
@@ -503,9 +505,11 @@ export class StashStore {
    * @returns how many local entries changed.
    */
   async applyRemote(remote: readonly RemoteStashEntry[]): Promise<number> {
-    const accepted: StashEntry[] = [];
+    // Keyed by item so a batch holding several versions of one item resolves
+    // to the newest of them, whatever order they arrive in.
+    const accepted = new Map<string, StashEntry>();
     for (const incoming of remote) {
-      const local = this.stash.get(incoming.itemId);
+      const local = accepted.get(incoming.itemId) ?? this.stash.get(incoming.itemId);
       if (local !== undefined && local.updatedAt > incoming.updatedAt) continue;
       if (
         local !== undefined &&
@@ -517,10 +521,10 @@ export class StashStore {
       ) {
         continue;
       }
-      accepted.push({ ...incoming, dirty: false });
+      accepted.set(incoming.itemId, { ...incoming, dirty: false });
     }
-    await this.commit(accepted);
-    return accepted.length;
+    await this.commit([...accepted.values()]);
+    return accepted.size;
   }
 
   // -- matching -------------------------------------------------------------
@@ -593,7 +597,20 @@ export class StashStore {
     this.solver = undefined;
   }
 
-  /** Apply entries to memory, notify, then persist. */
+  /**
+   * Run storage writes strictly one after another, in the order they were
+   * requested. Without this, a subscriber that edits the stash from inside a
+   * change notification would reach storage before the edit that triggered
+   * it, and the older write would land last. A failed write rejects for its
+   * own caller only; later writes still run.
+   */
+  private enqueueWrite(task: () => Promise<void>): Promise<void> {
+    const run = this.writeQueue.then(task);
+    this.writeQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Apply entries to memory, queue the write, notify, then wait for the write. */
   private async commit(entries: readonly StashEntry[], affectsOwnership = true): Promise<void> {
     if (entries.length === 0) return;
     for (const entry of entries) {
@@ -601,11 +618,18 @@ export class StashStore {
       const index = this.indexById.get(entry.itemId);
       if (index !== undefined) this.ownedFlags[index] = entry.deleted ? 0 : 1;
     }
+    // Queue before notifying, so anything a subscriber does is written after this.
+    const written = this.enqueueWrite(() => this.adapter.putStash(entries));
     if (affectsOwnership) {
       this.solver = undefined;
-      this.changed();
+      try {
+        this.changed();
+      } catch (error) {
+        await written.catch(() => undefined);
+        throw error;
+      }
     }
-    await this.adapter.putStash(entries);
+    await written;
   }
 
   private changed(): void {
