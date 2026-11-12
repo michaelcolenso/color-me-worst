@@ -11,7 +11,8 @@
  *   - a mix is searched for when the best owned single match is >= 2.5
  *     ({@link MIX_TRIGGER_DELTA_E}); the stricter of the two triggers wins;
  *   - a mix is only reported when it beats that single match by a visible
- *     margin ({@link MIX_MIN_IMPROVEMENT}), since mixing costs effort;
+ *     margin ({@link MIX_MIN_IMPROVEMENT}), since mixing costs effort, or
+ *     when it is what brings the target inside the gap limit at all;
  *   - the target is a gap when the best owned option, single or mixed, is
  *     still above 4.0 ({@link GAP_DELTA_E}).
  * All three are overridable per call.
@@ -221,6 +222,7 @@ export function createMatchSolver(input: MatchSolverInput): MatchSolver {
     // colour, not flake, glow or multi-colour effects).
     const mixTrigger = options.mixTriggerDeltaE ?? MIX_TRIGGER_DELTA_E;
     const minImprovement = options.mixMinImprovement ?? MIX_MIN_IMPROVEMENT;
+    const gapLimit = options.gapDeltaE ?? GAP_DELTA_E;
     const ownedSingleDeltaE = bestOwnedSingle?.deltaE00 ?? Number.POSITIVE_INFINITY;
     let bestTwoPartMix: TwoPartMix | undefined;
     if (options.allowMixes !== false && ownedSingleDeltaE >= mixTrigger && preparedOwned.items.length >= 2) {
@@ -228,17 +230,26 @@ export function createMatchSolver(input: MatchSolverInput): MatchSolver {
       const mixes = findBestTwoPartMixes(targetColor.lab, preparedOwned, {
         experimentalFinishes,
         limit: 1,
-        maxDeltaE: ownedSingleDeltaE - minImprovement,
+        maxDeltaE: ownedSingleDeltaE,
         eligible: (item) =>
           (options.medium === undefined || item.medium === options.medium) &&
           (experimentalFinishes || finishClassOf(item.finish) === targetClass),
         ...(options.mixRatios !== undefined ? { ratios: options.mixRatios } : {}),
         ...(options.weights !== undefined ? { weights: options.weights } : {}),
       });
-      bestTwoPartMix = mixes[0];
+      // Report the mix when it is clearly better than the single, or when it
+      // is what brings the target within reach at all: a small improvement
+      // still matters if it is the difference between usable and a purchase.
+      const candidate = mixes[0];
+      if (
+        candidate !== undefined &&
+        (candidate.deltaE00 < ownedSingleDeltaE - minImprovement ||
+          (ownedSingleDeltaE > gapLimit && candidate.deltaE00 <= gapLimit))
+      ) {
+        bestTwoPartMix = candidate;
+      }
     }
 
-    const gapLimit = options.gapDeltaE ?? GAP_DELTA_E;
     const bestOwned = Math.min(ownedSingleDeltaE, bestTwoPartMix?.deltaE00 ?? Number.POSITIVE_INFINITY);
     let coverage: StashCoverage;
     if (ownedSingleDeltaE < mixTrigger) coverage = 'owned_single';

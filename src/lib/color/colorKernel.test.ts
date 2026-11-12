@@ -808,6 +808,20 @@ describe('matchSolver', () => {
     expect(unowned.coverage).toBe('gap');
   });
 
+  it('does not call a target a gap when an owned mix reaches it, even by a small margin', () => {
+    // Best single is just over the gap limit; the best mix is under it but
+    // improves on the single by less than the minimum-improvement margin.
+    const catalog = [makeItem('#ace196'), makeItem('#97c233'), makeItem('#5b0057')];
+    const solved = solveMatch('#8fc44f', { catalog, ownedIds: catalog.map((item) => item.id) });
+    const single = solved.bestOwnedSingle?.deltaE00 as number;
+    expect(single).toBeGreaterThan(GAP_DELTA_E);
+    expect(solved.bestTwoPartMix).toBeDefined();
+    expect(solved.bestTwoPartMix?.deltaE00 as number).toBeLessThanOrEqual(GAP_DELTA_E);
+    expect(single - (solved.bestTwoPartMix?.deltaE00 as number)).toBeLessThan(0.5);
+    expect(solved.coverage).toBe('owned_mix');
+    expect(solved.bestOwnedDeltaE).toBe(solved.bestTwoPartMix?.deltaE00);
+  });
+
   it('does not mix thread: floss targets get singles only', () => {
     const a = makeItem('#ffffff', { medium: 'embroidery_floss' });
     const b = makeItem('#aa0000', { medium: 'embroidery_floss' });
@@ -824,7 +838,8 @@ describe('matchSolver', () => {
       const single = solved.bestOwnedSingle?.deltaE00 ?? Number.POSITIVE_INFINITY;
       if (solved.bestTwoPartMix) {
         expect(single).toBeGreaterThanOrEqual(2.5);
-        expect(solved.bestTwoPartMix.deltaE00).toBeLessThan(single - 0.5);
+        const mixed = solved.bestTwoPartMix.deltaE00;
+        expect(mixed < single - 0.5 || (single > GAP_DELTA_E && mixed <= GAP_DELTA_E)).toBe(true);
         expect(solved.bestOwnedDeltaE).toBe(solved.bestTwoPartMix.deltaE00);
       } else {
         expect(solved.bestOwnedDeltaE).toBe(single);

@@ -30,7 +30,7 @@ runs unchanged in a browser, a Web Worker, an edge runtime or Node.
 | `pigmentMixer.ts` | Kubelka-Munk two-part mixing, medium and finish compatibility rules, exhaustive mix search |
 | `matchSolver.ts` | Ranks single substitutes, decides when to search for a mix, and classifies shopping-list gaps |
 | `spectralData.ts` | Generated spectral tables (do not edit; see below) |
-| `colorKernel.test.ts` | 90 tests, including all 34 Sharma et al. (2005) CIEDE2000 reference pairs |
+| `colorKernel.test.ts` | 91 tests, including all 34 Sharma et al. (2005) CIEDE2000 reference pairs |
 
 ### Run it
 
@@ -100,8 +100,9 @@ reproduce the sRGB primaries.
 - **Thresholds reconciled.** The specification gives three overlapping numbers
   for when to mix (3.0–5.0, "no single under 2.5") and when a colour is a gap
   (above 4.0). The solver searches for a mix when the best owned single is at
-  or above 2.5, reports it only if it beats that single by at least 0.5, and
-  calls a gap when nothing owned gets within 4.0. All three are options.
+  or above 2.5, reports it only if it beats that single by at least 0.5 (or
+  is what brings the target within 4.0), and calls a gap when nothing owned,
+  single or mixed, gets within 4.0. All three are options.
 - **Schema additions.** `MediumType` gains `bead` and `leather_dye`, and
   `FinishType` gains `variegated`, because the specification names them in
   prose but omits them from the types. `TwoPartMix` gains a `warnings` list.
