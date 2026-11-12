@@ -23,6 +23,7 @@
   },
   "include": [
     "src",
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "tests/**/*.ts"
   ]
 }
