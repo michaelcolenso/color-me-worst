@@ -96,6 +96,8 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const clientRef = useRef<ImageWorkerClient | null>(null);
   const nextPinId = useRef(1);
+  /** Changes whenever the photo or its lighting correction does; stale async results compare against it. */
+  const colourEpoch = useRef(0);
 
   const client = useCallback(() => {
     clientRef.current ??= createClient();
@@ -110,6 +112,14 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   );
 
   const shown = corrected ?? image;
+
+  // A palette's colours have the lighting correction of the moment baked in.
+  // When the photo or the correction changes they no longer describe what is
+  // on screen, so the palette is dropped rather than left to disagree with pins.
+  useEffect(() => {
+    colourEpoch.current += 1;
+    setPalette(null);
+  }, [image, balance]);
 
   // Draw whichever version of the photo is current.
   useEffect(() => {
@@ -307,12 +317,14 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   const extract = async () => {
     if (!image) return;
     setBusy('Finding the main colours…');
+    const epoch = colourEpoch.current;
     try {
       const result = await client().extractPalette(image, {
         count: paletteCount,
         ...(balance ? { whiteBalance: balance.matrix } : {}),
       });
-      setPalette(result.swatches);
+      // Ignore a result computed for lighting that has since changed.
+      if (epoch === colourEpoch.current) setPalette(result.swatches);
     } catch (error) {
       setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Couldn’t extract a palette.' });
     } finally {

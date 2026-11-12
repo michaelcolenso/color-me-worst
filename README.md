@@ -309,7 +309,7 @@ works offline after the first visit. Three tabs:
 | `src/app/components/MatchCard.tsx` | One target and the best option for it |
 | `src/lib/catalog/recipeParser.ts` | Resolves free-text lines to catalogue items |
 | `src/lib/match/matchSummary.ts` | Turns a solver result into a verdict and wording |
-| `public/sw.js`, `public/manifest.webmanifest` | Offline support and install metadata |
+| `src/app/serviceWorker.js`, `public/manifest.webmanifest` | Offline support and install metadata; the build writes `/sw.js` with the list of files to cache |
 | `scripts/e2e.mjs` | End-to-end test of the production build |
 
 ### Design decisions
@@ -331,13 +331,14 @@ works offline after the first visit. Three tabs:
 
 ### Verification
 
-- 196 unit tests, including 15 new ones for recipe parsing and verdicts.
+- 198 unit tests, including 17 new ones for recipe parsing and verdicts.
 - `npm run test:e2e` builds the production bundle and drives it in headless
   Chromium at 390 x 844 and 1280 x 900: builds a stash and confirms it survives
   a reload, places, drags, nudges and deletes pins, corrects lighting from the
   grey card, switches match mode, extracts a palette, translates the example
-  recipe, checks the shopping list, confirms the swatch halves touch, reloads
-  with the network off, and checks for sideways scrolling and console errors.
+  recipe, checks the shopping list, confirms the swatch halves touch, confirms
+  every built file is in the offline cache after one visit, reloads with the
+  network off, and checks for sideways scrolling and console errors.
 
 ### Not done, or not verified
 

@@ -1,21 +1,30 @@
 /*
  * Service worker: makes the app usable offline after the first visit.
  *
+ * This file is a template. The build (see vite.config.ts) replaces the two
+ * placeholders below with the list of files it produced and a hash of that
+ * list, and writes the result to /sw.js.
+ *
  * Strategy
+ *   - Install: download every file the app needs to start (page, scripts,
+ *     styles, the image worker, icons). The page has usually finished loading
+ *     before this worker takes control, so relying on requests passing through
+ *     it would leave the first visit uncached.
  *   - Page navigations: network first, falling back to the cached shell, so a
  *     new release is picked up whenever the device is online.
- *   - Everything else on this origin (scripts, styles, the catalogue bundle,
- *     icons): cache first. Built asset file names contain a content hash, so a
- *     cached copy can never be stale.
- * Bump CACHE to discard everything cached by an earlier version.
+ *   - Everything else on this origin: cache first. Built file names contain a
+ *     content hash, so a cached copy can never be stale.
+ * A new build has a new hash, so it gets a fresh cache and the old one is
+ * deleted on activation.
  */
-const CACHE = 'color-me-worst-v1';
+const PRECACHE = self.__PRECACHE_MANIFEST__;
+const CACHE = `color-me-worst-${self.__PRECACHE_VERSION__}`;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(['/', '/manifest.webmanifest', '/icon.svg']))
+      .then((cache) => cache.addAll(PRECACHE))
       .then(() => self.skipWaiting()),
   );
 });

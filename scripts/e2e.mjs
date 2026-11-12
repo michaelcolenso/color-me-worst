@@ -167,6 +167,15 @@ async function run(label, viewport) {
   assert.ok((await page.locator('.match-card').count()) >= 4, 'the palette adds several colours');
   await shot('5-palette');
 
+  // A palette is tied to the lighting it was extracted under: changing the light discards it.
+  await page.getByRole('button', { name: 'Reset light' }).click();
+  await assertGone(page.getByRole('heading', { name: 'Main colours in this photo' }), 'resetting the light clears the palette');
+  await page.getByRole('button', { name: 'Extract palette' }).click();
+  await page.getByRole('heading', { name: 'Main colours in this photo' }).waitFor();
+  await page.getByRole('button', { name: 'Auto balance' }).click();
+  await assertVisible(page.getByText('Automatic correction applied'), 'automatic balance confirms');
+  await assertGone(page.getByRole('heading', { name: 'Main colours in this photo' }), 'changing the light clears the palette');
+
   // The photo and pins survive a visit to another tab.
   await page.getByRole('button', { name: 'Recipe' }).click();
 
@@ -196,9 +205,26 @@ async function run(label, viewport) {
   assert.equal(await page.locator('.pin').count(), 1, 'pins are still there after switching tabs');
 
   // -- offline ------------------------------------------------------------------
-  await page.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
-  await page.reload(); // let the worker cache the assets it now controls
-  await page.getByRole('heading', { name: 'Match colours from a photo' }).waitFor();
+  // No extra online reload here: the service worker must have downloaded
+  // everything the app needs by the time it reports itself active.
+  await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    const worker = registration.active;
+    if (worker && worker.state !== 'activated') {
+      await new Promise((done) => worker.addEventListener('statechange', () => worker.state === 'activated' && done(undefined)));
+    }
+  });
+  // Prove the files are in Cache Storage itself, not merely in the browser's HTTP cache.
+  const precache = await page.evaluate(async () => {
+    const source = await (await fetch('/sw.js')).text();
+    const files = JSON.parse(/const PRECACHE = (\[.*?\]);/.exec(source)[1]);
+    const missing = [];
+    for (const file of files) if (!(await caches.match(file))) missing.push(file);
+    return { files, missing };
+  });
+  assert.ok(precache.files.some((file) => /\/assets\/index-.*\.js$/.test(file)), 'the app bundle is in the precache list');
+  assert.ok(precache.files.some((file) => /\/assets\/imageWorker-.*\.js$/.test(file)), 'the image worker is in the precache list');
+  assert.deepEqual(precache.missing, [], 'every listed file was cached at install');
   await context.setOffline(true);
   await page.reload();
   await page.getByRole('heading', { name: 'Match colours from a photo' }).waitFor();
@@ -220,6 +246,14 @@ async function run(label, viewport) {
   assert.deepEqual(real, [], `${label}: the page logged errors`);
   await context.close();
   console.log(`  ${label} (${viewport.width} x ${viewport.height}): passed`);
+}
+
+async function assertGone(locator, message) {
+  try {
+    await locator.first().waitFor({ state: 'detached', timeout: 5000 });
+  } catch {
+    assert.fail(`expected to disappear: ${message}`);
+  }
 }
 
 async function assertVisible(locator, message) {

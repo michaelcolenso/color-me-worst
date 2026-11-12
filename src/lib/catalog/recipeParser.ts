@@ -70,6 +70,8 @@ interface IndexedItem {
   nameTokens: string[];
   /** Phrases, any of which signals this item's brand or line. */
   contextPhrases: string[];
+  /** Every word that can legitimately appear in a line describing this item alone. */
+  ownWords: Set<string>;
   sku: string;
   /** A code distinctive enough to match on its own: has a letter or separator, or is long. */
   skuIsDistinctive: boolean;
@@ -99,25 +101,34 @@ function stripDecorations(line: string): string {
 export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeResolver {
   const indexed: IndexedItem[] = catalog.map((item) => {
     const sku = normalise(item.sku);
+    const nameTokens = tokenise(item.name);
+    const contextPhrases = [item.brand, item.line, ...(BRAND_ALIASES[item.brand] ?? [])].map(normalise).filter(Boolean);
     return {
       item,
-      nameTokens: tokenise(item.name),
-      contextPhrases: [item.brand, item.line, ...(BRAND_ALIASES[item.brand] ?? [])].map(normalise).filter(Boolean),
+      nameTokens,
+      contextPhrases,
+      ownWords: new Set([...nameTokens, ...contextPhrases.flatMap((phrase) => phrase.split(' ')), sku]),
       sku,
       skuIsDistinctive: /[a-z.]/.test(sku) || sku.replace(/\D/g, '').length >= 5,
     };
   });
 
   function resolveLine(line: string): ResolvedRecipeLine {
+    return resolveEntry(line).resolved;
+  }
+
+  function resolveEntry(line: string): { resolved: ResolvedRecipeLine; winner?: IndexedItem } {
     const raw = line.trim();
     const hex = HEX_IN_TEXT.exec(raw);
     if (hex) {
       const label = raw.replace(hex[0], '').replace(/^[\s:,\-–—]+|[\s:,\-–—]+$/g, '').trim();
-      return { kind: 'color', raw, label: label === '' ? hex[0].toLowerCase() : label, color: colorFromHex(hex[0]) };
+      return {
+        resolved: { kind: 'color', raw, label: label === '' ? hex[0].toLowerCase() : label, color: colorFromHex(hex[0]) },
+      };
     }
 
     const text = normalise(stripDecorations(raw));
-    if (text === '') return { kind: 'unknown', raw };
+    if (text === '') return { resolved: { kind: 'unknown', raw } };
     const tokens = text.split(/\s+/);
     const tokenSet = new Set(tokens);
     const padded = ` ${text} `;
@@ -158,22 +169,42 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
     }
 
     const winner = best[0];
-    if (winner === undefined) return { kind: 'unknown', raw };
+    if (winner === undefined) return { resolved: { kind: 'unknown', raw } };
     // Prefer an item still on sale when otherwise tied.
     best.sort((a, b) => Number(a.item.discontinued) - Number(b.item.discontinued));
     const chosen = best[0] as IndexedItem;
-    return { kind: 'item', raw, item: chosen.item, alternatives: best.slice(1).map((entry) => entry.item) };
+    return {
+      resolved: { kind: 'item', raw, item: chosen.item, alternatives: best.slice(1).map((entry) => entry.item) },
+      winner: chosen,
+    };
+  }
+
+  /**
+   * A line containing commas is either one item written with a comma
+   * ("Mephiston Red, Citadel") or several entries ("Mephiston Red, Nuln Oil").
+   * It is one item only when the whole line resolves to a single item and
+   * every comma-separated piece consists solely of that item's own words:
+   * its name, brand, range or code. Anything else is separate entries, so no
+   * entry is ever swallowed by a neighbour that happens to match better.
+   */
+  function splitOnCommas(line: string): string[] {
+    if (!line.includes(',')) return [line];
+    const pieces = line.split(',').filter((piece) => piece.trim() !== '');
+    const whole = resolveEntry(line);
+    const owner = whole.winner;
+    if (owner !== undefined && whole.resolved.kind === 'item' && whole.resolved.alternatives.length === 0) {
+      const describesOwnerOnly = pieces.every((piece) =>
+        tokenise(stripDecorations(piece)).every((word) => owner.ownWords.has(word)),
+      );
+      if (describesOwnerOnly) return [line];
+    }
+    return pieces;
   }
 
   function resolve(text: string): ResolvedRecipeLine[] {
     return text
       .split(/[\n;]+/)
-      // Commas separate entries too, except inside a line that already resolves as one item.
-      .flatMap((line) => {
-        if (!line.includes(',')) return [line];
-        const whole = resolveLine(line);
-        return whole.kind === 'item' && whole.alternatives.length === 0 ? [line] : line.split(',');
-      })
+      .flatMap(splitOnCommas)
       .map((line) => line.trim())
       .filter((line) => line !== '')
       .map(resolveLine);

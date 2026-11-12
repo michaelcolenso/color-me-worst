@@ -117,6 +117,29 @@ describe('recipeParser', () => {
     ]);
     expect(resolver.resolve('')).toEqual([]);
   });
+
+  it('never lets one comma-separated entry swallow another', () => {
+    const names = (text: string) =>
+      resolver.resolve(text).map((line) => (line.kind === 'item' ? line.item.name : `${line.kind}:${line.raw}`));
+    // A product code scores far higher than a name, but the name is still its own entry.
+    expect(names('Vallejo 70.950 Black, Mephiston Red')).toEqual(['Black', 'Mephiston Red']);
+    // An unrecognised entry is reported, not dropped.
+    expect(names('Mephiston Red, Unicorn Tears')).toEqual(['Mephiston Red', 'unknown:Unicorn Tears']);
+    expect(names('Unicorn Tears, Mephiston Red, Nuln Oil')).toEqual(['unknown:Unicorn Tears', 'Mephiston Red', 'Nuln Oil']);
+    expect(names('Nuln Oil, #3a1418')).toEqual(['Nuln Oil', 'color:#3a1418']);
+    expect(names('Mephiston Red,, ')).toEqual(['Mephiston Red']);
+  });
+
+  it('keeps one item written with a comma as one entry', () => {
+    const names = (text: string) =>
+      resolver.resolve(text).map((line) => (line.kind === 'item' ? `${line.item.brand} ${line.item.name}` : line.kind));
+    expect(names('Mephiston Red, Citadel')).toEqual(['Citadel Mephiston Red']);
+    expect(names('Black, Vallejo 70.950')).toEqual(['Vallejo Black']);
+    expect(names('Ivory, Vallejo Model Color')).toEqual(['Vallejo Ivory']);
+    expect(names('Red, Mephiston')).toEqual(['Citadel Mephiston Red']);
+    // The same paint named twice on one line is still one thing to own.
+    expect(names('Mephiston Red, Mephiston Red')).toEqual(['Citadel Mephiston Red']);
+  });
 });
 
 describe('matchSummary', () => {
