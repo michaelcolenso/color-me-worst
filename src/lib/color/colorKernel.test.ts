@@ -822,6 +822,24 @@ describe('matchSolver', () => {
     expect(solved.bestOwnedDeltaE).toBe(solved.bestTwoPartMix?.deltaE00);
   });
 
+  it('applies a gap limit stricter than the mix trigger to single matches too', () => {
+    const grey = makeItem('#808080');
+    const input = { catalog: [grey], ownedIds: [grey.id] };
+    const lenient = solveMatch('#858585', input);
+    expect(lenient.bestOwnedDeltaE as number).toBeGreaterThan(1);
+    expect(lenient.coverage).toBe('owned_single');
+    const strict = solveMatch('#858585', input, { gapDeltaE: 1 });
+    expect(strict.coverage).toBe('gap');
+
+    // With a second paint on hand, missing the strict limit triggers a mix search.
+    const light = makeItem('#8c8c8c');
+    const both = { catalog: [grey, light], ownedIds: [grey.id, light.id] };
+    const mixed = solveMatch('#858585', both, { gapDeltaE: 1, mixMinImprovement: 0 });
+    expect(mixed.bestTwoPartMix).toBeDefined();
+    expect(mixed.bestOwnedDeltaE as number).toBeLessThanOrEqual(1);
+    expect(mixed.coverage).toBe('owned_mix');
+  });
+
   it('does not mix thread: floss targets get singles only', () => {
     const a = makeItem('#ffffff', { medium: 'embroidery_floss' });
     const b = makeItem('#aa0000', { medium: 'embroidery_floss' });

@@ -30,7 +30,7 @@ runs unchanged in a browser, a Web Worker, an edge runtime or Node.
 | `pigmentMixer.ts` | Kubelka-Munk two-part mixing, medium and finish compatibility rules, exhaustive mix search |
 | `matchSolver.ts` | Ranks single substitutes, decides when to search for a mix, and classifies shopping-list gaps |
 | `spectralData.ts` | Generated spectral tables (do not edit; see below) |
-| `colorKernel.test.ts` | 91 tests, including all 34 Sharma et al. (2005) CIEDE2000 reference pairs |
+| `colorKernel.test.ts` | 92 tests, including all 34 Sharma et al. (2005) CIEDE2000 reference pairs |
 
 ### Run it
 

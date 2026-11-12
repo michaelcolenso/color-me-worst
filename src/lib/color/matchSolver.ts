@@ -9,7 +9,9 @@
  * ΔE00 < 2.5", and a colour is a shopping-list gap above 4.0. They are
  * reconciled here as:
  *   - a mix is searched for when the best owned single match is >= 2.5
- *     ({@link MIX_TRIGGER_DELTA_E}); the stricter of the two triggers wins;
+ *     ({@link MIX_TRIGGER_DELTA_E}); the stricter of the two triggers wins.
+ *     If a caller sets the gap limit below that, missing the gap limit
+ *     triggers the search too;
  *   - a mix is only reported when it beats that single match by a visible
  *     margin ({@link MIX_MIN_IMPROVEMENT}), since mixing costs effort, or
  *     when it is what brings the target inside the gap limit at all;
@@ -104,7 +106,7 @@ export interface SolveOptions {
 
 /** How well the user's own inventory covers a target. */
 export type StashCoverage =
-  /** An owned item is within the "exact" or "close" band on its own. */
+  /** An owned item is close enough on its own: under the mix trigger and within the gap limit. */
   | 'owned_single'
   /** No owned single is good enough, but a mix of two owned items is within the gap limit. */
   | 'owned_mix'
@@ -225,7 +227,10 @@ export function createMatchSolver(input: MatchSolverInput): MatchSolver {
     const gapLimit = options.gapDeltaE ?? GAP_DELTA_E;
     const ownedSingleDeltaE = bestOwnedSingle?.deltaE00 ?? Number.POSITIVE_INFINITY;
     let bestTwoPartMix: TwoPartMix | undefined;
-    if (options.allowMixes !== false && ownedSingleDeltaE >= mixTrigger && preparedOwned.items.length >= 2) {
+    // A caller may set the gap limit below the mix trigger; a single that
+    // misses that stricter limit is not good enough on its own either.
+    const singleSuffices = ownedSingleDeltaE < mixTrigger && ownedSingleDeltaE <= gapLimit;
+    if (options.allowMixes !== false && !singleSuffices && preparedOwned.items.length >= 2) {
       const targetClass = finishClassOf(targetFinish);
       const mixes = findBestTwoPartMixes(targetColor.lab, preparedOwned, {
         experimentalFinishes,
@@ -252,7 +257,7 @@ export function createMatchSolver(input: MatchSolverInput): MatchSolver {
 
     const bestOwned = Math.min(ownedSingleDeltaE, bestTwoPartMix?.deltaE00 ?? Number.POSITIVE_INFINITY);
     let coverage: StashCoverage;
-    if (ownedSingleDeltaE < mixTrigger) coverage = 'owned_single';
+    if (singleSuffices) coverage = 'owned_single';
     else if (bestTwoPartMix !== undefined && bestTwoPartMix.deltaE00 <= gapLimit) coverage = 'owned_mix';
     else if (ownedSingleDeltaE <= gapLimit) coverage = 'owned_approximate';
     else coverage = 'gap';
