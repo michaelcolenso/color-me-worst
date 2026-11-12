@@ -6,7 +6,9 @@
  * Reading thousands of rows out of IndexedDB takes tens of milliseconds, so
  * the store loads everything once at start-up and afterwards answers every
  * query from flat arrays with no I/O. Writes update memory first, so the UI is
- * instant, and are then persisted.
+ * instant, and are then persisted in order. If a write fails, the change stays
+ * in memory, the caller's promise rejects, and the change is written again
+ * with the next successful write.
  *
  * SYNC
  * The store never talks to a server itself. Each stash entry carries a
@@ -262,6 +264,8 @@ export class StashStore {
   private versionValue = 0;
   /** Tail of the storage write queue; see {@link StashStore.enqueueWrite}. */
   private writeQueue: Promise<void> = Promise.resolve();
+  /** Ids whose in-memory entry is newer than storage because a write failed. */
+  private readonly unpersisted = new Set<string>();
 
   private constructor(
     private readonly adapter: StorageAdapter,
@@ -514,6 +518,7 @@ export class StashStore {
       if (
         local !== undefined &&
         !local.dirty &&
+        !this.unpersisted.has(incoming.itemId) &&
         local.updatedAt === incoming.updatedAt &&
         local.deleted === incoming.deleted &&
         local.quantity === incoming.quantity &&
@@ -525,6 +530,24 @@ export class StashStore {
     }
     await this.commit([...accepted.values()]);
     return accepted.size;
+  }
+
+  // -- durability -----------------------------------------------------------
+
+  /**
+   * True when a storage write failed (for example, the disk is full) and
+   * memory holds changes that would be lost on reload. They are written
+   * automatically with the next successful write, or on
+   * {@link StashStore.retryPersistence}.
+   */
+  get hasUnpersistedChanges(): boolean {
+    return this.unpersisted.size > 0;
+  }
+
+  /** Try again to write changes left over from a failed storage write. */
+  async retryPersistence(): Promise<void> {
+    if (this.unpersisted.size === 0) return;
+    await this.enqueueWrite(() => this.persist([]));
   }
 
   // -- matching -------------------------------------------------------------
@@ -610,6 +633,27 @@ export class StashStore {
     return run;
   }
 
+  /**
+   * Write the current in-memory version of the given ids, together with
+   * anything left over from an earlier failed write. Memory is always at
+   * least as new as what was requested, so writing from it is safe.
+   */
+  private async persist(itemIds: readonly string[]): Promise<void> {
+    const ids = new Set([...itemIds, ...this.unpersisted]);
+    const batch: StashEntry[] = [];
+    for (const id of ids) {
+      const entry = this.stash.get(id);
+      if (entry !== undefined) batch.push(entry);
+    }
+    try {
+      await this.adapter.putStash(batch);
+    } catch (error) {
+      for (const id of itemIds) this.unpersisted.add(id);
+      throw error;
+    }
+    for (const id of ids) this.unpersisted.delete(id);
+  }
+
   /** Apply entries to memory, queue the write, notify, then wait for the write. */
   private async commit(entries: readonly StashEntry[], affectsOwnership = true): Promise<void> {
     if (entries.length === 0) return;
@@ -619,7 +663,8 @@ export class StashStore {
       if (index !== undefined) this.ownedFlags[index] = entry.deleted ? 0 : 1;
     }
     // Queue before notifying, so anything a subscriber does is written after this.
-    const written = this.enqueueWrite(() => this.adapter.putStash(entries));
+    const itemIds = entries.map((entry) => entry.itemId);
+    const written = this.enqueueWrite(() => this.persist(itemIds));
     if (affectsOwnership) {
       this.solver = undefined;
       try {

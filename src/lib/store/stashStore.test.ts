@@ -453,6 +453,45 @@ describe('StashStore: persistence', () => {
     expect((await adapter.loadStash()).find((entry) => entry.itemId === red)?.quantity).toBe(2);
   });
 
+  it('makes a downloaded entry durable when the download is retried after a failed write', async () => {
+    const adapter = createMemoryAdapter();
+    const store = await openSeeded(adapter);
+    const red = idOf(store, 'mephiston');
+    const oil = idOf(store, 'nuln oil');
+    const original = adapter.putStash.bind(adapter);
+    let fail = true;
+    adapter.putStash = (entries) => (fail ? Promise.reject(new Error('disk full')) : original(entries));
+    const download: RemoteStashEntry[] = [{ itemId: red, quantity: 2, updatedAt: 5000, deleted: false }];
+
+    await expect(store.applyRemote(download)).rejects.toThrow('disk full');
+    expect(store.hasUnpersistedChanges).toBe(true);
+    expect(await adapter.loadStash()).toEqual([]);
+
+    fail = false;
+    await store.applyRemote(download);
+    expect(store.hasUnpersistedChanges).toBe(false);
+    expect(await adapter.loadStash()).toEqual([
+      { itemId: red, quantity: 2, updatedAt: 5000, deleted: false, dirty: false },
+    ]);
+
+    // A failed local edit is carried along by the next successful write of anything.
+    fail = true;
+    await expect(store.setOwned(oil, true)).rejects.toThrow('disk full');
+    fail = false;
+    await store.setOwned(red, true, { quantity: 3 });
+    const stored = await adapter.loadStash();
+    expect(stored.find((entry) => entry.itemId === oil)).toMatchObject({ deleted: false, dirty: true });
+    expect(stored.find((entry) => entry.itemId === red)?.quantity).toBe(3);
+
+    // And can be retried explicitly.
+    fail = true;
+    await expect(store.setOwned(oil, false)).rejects.toThrow('disk full');
+    fail = false;
+    await store.retryPersistence();
+    expect(store.hasUnpersistedChanges).toBe(false);
+    expect((await adapter.loadStash()).find((entry) => entry.itemId === oil)?.deleted).toBe(true);
+  });
+
   it('replaces the stored catalogue atomically and keeps databases separate', async () => {
     const factory = new IDBFactory();
     const adapter = await createIndexedDbAdapter({ factory, name: 'a' });
