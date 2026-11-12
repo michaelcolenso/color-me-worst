@@ -8,12 +8,16 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "derive:basis": "node scripts/deriveSpectralBasis.mjs"
+    "derive:basis": "node scripts/deriveSpectralBasis.mjs",
+    "seed:generate": "tsx scripts/generateSeed.ts"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
+    "fake-indexeddb": "^6.2.8",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   }
