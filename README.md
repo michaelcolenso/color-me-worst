@@ -12,8 +12,8 @@ The project is built in gated phases. Each phase stops for sign-off.
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1 | Deterministic colour science and mixing kernel | Done |
-| 2 | Catalogue schema, seed data, local-first store | **Done, awaiting sign-off** |
-| 3 | Image normalisation and palette extraction | Not started |
+| 2 | Catalogue schema, seed data, local-first store | Done |
+| 3 | Image normalisation and palette extraction | **Done, awaiting sign-off** |
 | 4 | Interactive UI and "Shop Your Stash" solver | Not started |
 | 5 | Vision-assisted onboarding and export | Not started |
 
@@ -39,6 +39,7 @@ npm install
 npm test               # all unit tests, including both performance budgets
 npm run typecheck
 npm run seed:generate  # rebuild the seed SQL and client bundle from the source list
+npm run test:browser   # image pipeline in headless Chromium (needs Playwright installed)
 ```
 
 ### Use it
@@ -205,3 +206,77 @@ of sync is not built yet.
 - No network sync; only the local bookkeeping for it.
 - `user_id` is an opaque string with no users table, pending an auth decision.
 - The catalogue is a 111-item sample, not a full range for any brand.
+
+## Phase 3: photo normalisation and colour extraction
+
+Everything is in `src/lib/image/`. Apart from `canvasIo.ts` it has no DOM
+access, so it runs in a Web Worker or in Node.
+
+| File | What it does |
+| --- | --- |
+| `whiteBalance.ts` | Removes a lighting cast, from a clicked neutral point or automatically |
+| `loupeSampler.ts` | De-noised colour picker: reads a 5 x 5 or 11 x 11 square, rejects glare and shadow, returns the median |
+| `paletteExtractor.ts` | K-means++ in CIELAB: the 5 to 12 dominant colours of an image |
+| `imageWorker.ts`, `imageWorkerProtocol.ts`, `imageWorkerClient.ts` | Web Worker entry, message protocol and a promise-based client |
+| `canvasIo.ts` | Browser glue: decode a file to sRGB pixels, map a click to image coordinates |
+| `pixelMath.ts` | Shared pixel buffer type, fast sRGB tables, 3 x 3 matrices |
+
+```ts
+import { decodeImage } from './src/lib/image/canvasIo';
+import { createImageWorkerClient, sampleLoupe, whiteBalanceFromPoint } from './src/lib/image';
+
+const photo = await decodeImage(file);                         // sRGB pixels, EXIF-rotated, max 2048 px
+const balance = whiteBalanceFromPoint(photo, greyX, greyY);     // user clicked a grey card
+const pin = sampleLoupe(photo, x, y, { kernel: 11, whiteBalance: balance.matrix });
+store.getSolver().solve(pin.color, { mode: 'strict_stash' });   // straight into the Phase 1 solver
+
+const worker = new Worker(new URL('./src/lib/image/imageWorker.ts', import.meta.url), { type: 'module' });
+const palette = await createImageWorkerClient(worker).extractPalette(photo, {
+  count: 8,
+  whiteBalance: balance.matrix,
+});
+```
+
+### White balance
+
+A correction is a 3 x 3 matrix on linear-light sRGB. It can be baked into a
+copy of the image, or handed to the sampler and palette extractor, which
+correct on the fly.
+
+- **From a reference (accurate).** The user clicks something neutral. Three
+  models are offered: `bradford` (default) and `von_kries` are chromatic
+  adaptations that model a change of light; `channel_gain` scales red, green
+  and blue directly, which is what a camera's own white balance does.
+- **Automatic (a guess).** `shades_of_gray` (default), `gray_world` or
+  `white_patch` estimate the light from image statistics. All of them fail on
+  scenes dominated by one colour.
+- **Guards.** A reference that is too dark or blown out is refused with a
+  clear message. `castChroma` reports how strong the cast was; above about 40
+  the "neutral" was probably a coloured object.
+
+### What white balance cannot do
+
+- **It cannot recover clipped colours.** If the light pushed a colour outside
+  what the photo can record (a channel at 0 or 255), that information is gone.
+  Correction still improves such colours but does not restore them.
+- **Neither model is exact for a real photo.** A real cast mixes the light's
+  colour with whatever the camera did about it. In the tests, Bradford undoes a
+  simulated change of light to within rounding, but only about halves the error
+  of a simulated per-channel camera cast; `channel_gain` is the reverse.
+- **It does not fix metamerism** or uneven lighting across the frame.
+- **Nothing here has been tested on real photographs**, only on synthetic
+  images with known answers.
+
+### Verification
+
+- 50 unit tests on synthetic images with known answers (180 in the whole suite).
+- `npm run test:browser` decodes a PNG, corrects it and extracts a palette
+  inside a real Web Worker in headless Chromium, and checks the worker returns
+  exactly what the main thread computes.
+- Measured in the development container on a 2048 x 1536 image: palette of 12
+  50–70 ms, automatic white balance 50–75 ms, full-image correction 200–300 ms.
+
+### Not done in this phase
+
+- No user interface: there is no loupe or pin on screen yet (Phase 4).
+- Semantic region detection ("cloak highlights") is Phase 5.
