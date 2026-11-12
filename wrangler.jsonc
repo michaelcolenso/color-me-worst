@@ -1,0 +1,32 @@
+{
+  // Cloudflare Worker configuration. Nothing here is deployed automatically:
+  // run `npm run deploy` yourself when you are ready.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "color-me-worst",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    // The built app. Run `npm run build` first.
+    "directory": "./dist",
+    "binding": "ASSETS",
+    // Unknown paths fall back to index.html, as a single-page app expects.
+    "not_found_handling": "single-page-application",
+    // Only /api/* runs the Worker; everything else is served straight from assets.
+    "run_worker_first": ["/api/*"]
+  },
+  "observability": { "enabled": true },
+  // Do not send Wrangler usage telemetry from this project.
+  "send_metrics": false
+
+  // Photo import stays switched off until BOTH of these exist:
+  //
+  // 1. A KV namespace for rate limiting. Create one with
+  //      npx wrangler kv namespace create RATE_LIMIT
+  //    then add, using the id it prints:
+  //      "kv_namespaces": [{ "binding": "RATE_LIMIT", "id": "<id>" }]
+  //
+  // 2. An Anthropic API key, stored as a secret (never in this file):
+  //      npx wrangler secret put ANTHROPIC_API_KEY
+  //
+  // Optional: "vars": { "VISION_MODEL": "claude-sonnet-5-5" }
+}

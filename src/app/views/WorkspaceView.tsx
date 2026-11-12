@@ -10,6 +10,8 @@ import {
   type WorkerLike,
 } from '../../lib/image/imageWorkerClient';
 import { extractLoupePatch, sampleLoupe } from '../../lib/image/loupeSampler';
+import { buildCardEntries } from '../../lib/export/cardEntries';
+import { downloadBlob, recipeCardPdf, recipeCardPng } from '../../lib/export/recipeCard';
 import type { PaletteSwatch } from '../../lib/image/paletteExtractor';
 import { whiteBalanceFromPoint, type WhiteBalance } from '../../lib/image/whiteBalance';
 import { summarizeMatch } from '../../lib/match/matchSummary';
@@ -332,6 +334,38 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
     }
   };
 
+  const exportCard = async (format: 'png' | 'pdf') => {
+    if (!shown || pinResults.length === 0) return;
+    setBusy('Drawing the card…');
+    try {
+      const date = new Date().toISOString().slice(0, 10);
+      const input = {
+        image: shown,
+        entries: buildCardEntries(
+          pinResults.map(({ pin, number, sample, summary }) => ({ number, x: pin.x, y: pin.y, target: sample.color, summary })),
+        ),
+        title: 'Colour recipe',
+        subtitle: [
+          date,
+          mode === 'strict_stash' ? 'matched from my stash only' : 'matched against the full catalogue',
+          balance ? 'lighting corrected' : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        footnote:
+          'dE is the CIEDE2000 colour difference: under 1.5 is not visible, under 3 is a close substitute. ' +
+          'Catalogue colours are community data, not checked against real paint or thread, and mixes are predictions. ' +
+          'Test before you commit. Printed and on-screen colours will differ from the real thing.',
+      };
+      const blob = format === 'png' ? await recipeCardPng(input) : await recipeCardPdf(input);
+      downloadBlob(blob, `colour-recipe-${date}.${format}`);
+    } catch {
+      setNotice({ kind: 'error', text: 'The card couldn’t be created. Try again with fewer pins.' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const fileInput = (
     <input
       ref={fileRef}
@@ -546,6 +580,19 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
         <div className="results" aria-live="polite">
           {pinResults.length === 0 && paletteResults.length === 0 && (
             <p className="muted">Matches for each pin will appear here.</p>
+          )}
+          {pinResults.length > 0 && (
+            <div className="results-heading export-bar">
+              <h3>Save as a recipe card</h3>
+              <div className="button-row">
+                <button type="button" className="button small" onClick={() => void exportCard('png')} disabled={busy !== null}>
+                  PNG
+                </button>
+                <button type="button" className="button small" onClick={() => void exportCard('pdf')} disabled={busy !== null}>
+                  PDF
+                </button>
+              </div>
+            </div>
           )}
           {pinResults.map(({ pin, number, sample, summary }) => (
             <MatchCard
