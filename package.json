@@ -10,17 +10,28 @@
     "test:watch": "vitest",
     "derive:basis": "node scripts/deriveSpectralBasis.mjs",
     "seed:generate": "tsx scripts/generateSeed.ts",
-    "test:browser": "node scripts/browserSmoke.mjs"
+    "test:browser": "node scripts/browserSmoke.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test:e2e": "node scripts/e2e.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
     "fake-indexeddb": "^6.2.8",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",
     "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   }
 }

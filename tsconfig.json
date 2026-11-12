@@ -18,12 +18,15 @@
     "noEmit": true,
     "resolveJsonModule": true,
     "types": [
-      "node"
-    ]
+      "node",
+      "vite/client"
+    ],
+    "jsx": "react-jsx"
   },
   "include": [
     "src",
     "scripts/**/*.ts",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "vite.config.ts"
   ]
 }

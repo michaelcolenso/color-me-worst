@@ -6,8 +6,12 @@
  * distinct instead of around whatever happens to be far apart numerically.
  *
  * Steps
- *   1. Sample the image on a regular grid, up to `maxSamples` pixels, skipping
- *      transparent ones. White balance is applied here when supplied.
+ *   1. Sample the image, up to `maxSamples` pixels, skipping transparent
+ *      ones: one pixel at a seeded random position inside each cell of a
+ *      regular grid. The grid keeps coverage even; the jitter stops a
+ *      repeating texture whose period matches the grid spacing from being
+ *      sampled at the same phase every time. White balance is applied here
+ *      when supplied.
  *   2. Seed `count` centres with k-means++ (each new centre is drawn with
  *      probability proportional to squared distance from the nearest existing
  *      one), which avoids the poor starts plain random seeding gives.
@@ -92,10 +96,11 @@ export function extractPalette(image: PixelBuffer, options: PaletteOptions = {})
   const A = new Float64Array(capacity);
   const B = new Float64Array(capacity);
   let n = 0;
-  // Start half a stride in, so samples sit in cell centres rather than on the top-left edge.
-  const start = Math.floor(stride / 2);
-  for (let y = Math.min(start, height - 1); y < height; y += stride) {
-    for (let x = Math.min(start, width - 1); x < width; x += stride) {
+  for (let cellY = 0; cellY < height; cellY += stride) {
+    for (let cellX = 0; cellX < width; cellX += stride) {
+      // Stratified jitter: a random pixel within this grid cell.
+      const x = Math.min(width - 1, cellX + Math.floor(random() * stride));
+      const y = Math.min(height - 1, cellY + Math.floor(random() * stride));
       const offset = (y * width + x) * 4;
       if ((data[offset + 3] as number) < minAlpha) continue;
       let linear: [number, number, number] = [

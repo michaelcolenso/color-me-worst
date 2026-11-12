@@ -1,0 +1,826 @@
+/*
+ * App styles. Mobile first: a single column that widens into two on larger
+ * screens. Colours are defined once as tokens and redefined for dark mode.
+ *
+ * One rule matters more than the rest: nothing decorative may sit between or
+ * around two colours being compared. Swatches therefore have no borders,
+ * shadows or gradients, and their surround is the same mid-grey in both themes.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f3f2ef;
+  --surface: #ffffff;
+  --surface-2: #eceae5;
+  --text: #1c1d21;
+  --text-muted: #5d6068;
+  --border: #d5d2cb;
+  --accent: #b23a26;
+  --accent-text: #ffffff;
+  --focus: #1a5fd0;
+  --swatch-surround: #7b7b7b;
+  --ok: #1e6b3a;
+  --ok-bg: #dff1e4;
+  --mid: #7a5200;
+  --mid-bg: #f8ebc8;
+  --bad: #9a231b;
+  --bad-bg: #f9dedb;
+  --info-bg: #e2ebf8;
+  --radius: 10px;
+  --gap: 16px;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171b;
+    --surface: #202227;
+    --surface-2: #2a2d33;
+    --text: #ecebe8;
+    --text-muted: #a4a7af;
+    --border: #3a3d45;
+    --accent: #e0624c;
+    --accent-text: #16171b;
+    --focus: #7fb0ff;
+    --ok: #8fdba8;
+    --ok-bg: #1d3a28;
+    --mid: #f0cf82;
+    --mid-bg: #3e3214;
+    --bad: #ffa59b;
+    --bad-bg: #47201c;
+    --info-bg: #1f2c42;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+h1,
+h2,
+h3,
+p,
+figure,
+ul {
+  margin: 0;
+}
+
+h2 {
+  font-size: 1.35rem;
+}
+
+h3 {
+  font-size: 1rem;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 var(--gap) calc(var(--gap) * 2);
+  padding-left: max(var(--gap), env(safe-area-inset-left));
+  padding-right: max(var(--gap), env(safe-area-inset-right));
+}
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px var(--gap);
+  padding: 12px 0;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header h1 {
+  font-size: 1.1rem;
+  letter-spacing: 0.01em;
+}
+
+.app-header nav {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.tab[aria-current='page'] {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.tab .count {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.view {
+  display: grid;
+  gap: var(--gap);
+  padding-top: var(--gap);
+}
+
+.app-footer {
+  margin-top: calc(var(--gap) * 2);
+  padding-top: var(--gap);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.boot {
+  display: grid;
+  gap: var(--gap);
+  place-content: center;
+  min-height: 60vh;
+  padding: var(--gap);
+  text-align: center;
+}
+
+/* --------------------------------------------------------------- controls */
+
+.button {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button.primary,
+.button[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.button.small {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 0.9rem;
+}
+
+.icon-button {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.icon-button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.button-row.centered {
+  justify-content: center;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px var(--gap);
+  align-items: end;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.field.grow {
+  flex: 1 1 220px;
+}
+
+.field.block {
+  font-size: 0.95rem;
+}
+
+.field.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field.choose {
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.field input,
+.field select,
+.field textarea {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.field textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.checkbox input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.segmented button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  background: var(--surface);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--border);
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.notice {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--info-bg);
+}
+
+.notice.error {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+.notice.banner {
+  margin-top: var(--gap);
+}
+
+.warning,
+.warning-text {
+  color: var(--mid);
+}
+
+.warning {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--mid-bg);
+  font-size: 0.9rem;
+}
+
+/* ---------------------------------------------------------------- swatches */
+
+.split-swatch {
+  display: grid;
+  gap: 4px;
+}
+
+.split-swatch-colors {
+  display: flex;
+  padding: 10px;
+  background: var(--swatch-surround);
+  border-radius: var(--radius);
+}
+
+/* The two halves touch. No gap, border, radius or shadow may come between them. */
+.split-swatch-half {
+  flex: 1 1 0;
+  height: 84px;
+}
+
+.split-swatch-caption {
+  display: flex;
+  justify-content: space-around;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.split-swatch.small {
+  flex: none;
+}
+
+.split-swatch.small .split-swatch-colors {
+  width: 64px;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.split-swatch.small .split-swatch-half {
+  height: 36px;
+}
+
+/* ------------------------------------------------------------ match cards */
+
+.match-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.match-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.match-card-header h3 {
+  flex: 1;
+}
+
+.match-card-body {
+  display: grid;
+  gap: 8px;
+}
+
+.verdict {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+  background: var(--surface-2);
+}
+
+.verdict-exact,
+.verdict-close {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.verdict-mix,
+.verdict-approximate {
+  background: var(--mid-bg);
+  color: var(--mid);
+}
+
+.verdict-gap,
+.verdict-empty {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+.delta {
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.item-meta {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.75rem;
+}
+
+.tag.caution {
+  background: var(--mid-bg);
+  color: var(--mid);
+}
+
+.to-buy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 0.92rem;
+}
+
+/* --------------------------------------------------------------- workspace */
+
+.dropzone {
+  display: grid;
+  gap: var(--gap);
+  justify-items: start;
+  padding: 28px 20px;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.dropzone.dropping {
+  border-color: var(--accent);
+}
+
+.workspace-columns {
+  display: grid;
+  gap: var(--gap);
+}
+
+@media (min-width: 900px) {
+  .workspace-columns {
+    grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
+    align-items: start;
+  }
+
+  .stage {
+    position: sticky;
+    top: 84px;
+  }
+}
+
+.stage-frame {
+  position: relative;
+  border-radius: var(--radius);
+  background: var(--swatch-surround);
+  line-height: 0;
+  /* Pins near the edge and the magnifier must be able to overhang. */
+  overflow: visible;
+}
+
+.stage-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  cursor: crosshair;
+}
+
+.stage-frame.tool-neutral .stage-canvas {
+  cursor: cell;
+  outline: 3px solid var(--focus);
+}
+
+.stage-hint {
+  margin-top: 8px;
+  font-size: 0.9rem;
+}
+
+.pin {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  padding: 0;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.75),
+    0 2px 6px rgba(0, 0, 0, 0.5);
+  cursor: grab;
+  touch-action: none;
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1;
+  color: #ffffff;
+  text-shadow:
+    0 0 3px #000,
+    0 0 3px #000;
+}
+
+.pin.active {
+  cursor: grabbing;
+  z-index: 2;
+}
+
+.loupe-holder {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-50%, calc(-100% - 28px));
+  pointer-events: none;
+}
+
+.loupe-holder.below {
+  transform: translate(-50%, 28px);
+}
+
+.loupe {
+  display: block;
+  border: 3px solid #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+}
+
+.results {
+  display: grid;
+  gap: 12px;
+}
+
+.results-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* ------------------------------------------------------------------ recipe */
+
+.recipe-summary {
+  font-size: 1.05rem;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.recipe-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.recipe-table th,
+.recipe-table td {
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+  font-weight: 400;
+}
+
+.recipe-table thead th {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.recipe-table tbody tr:last-child th,
+.recipe-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.recipe-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cell-with-swatch {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 220px;
+}
+
+/* On narrow screens each recipe line becomes a stacked card instead of a wide row. */
+@media (max-width: 640px) {
+  .table-scroll {
+    border: 0;
+    background: none;
+  }
+
+  .recipe-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .recipe-table,
+  .recipe-table tbody,
+  .recipe-table tr,
+  .recipe-table th,
+  .recipe-table td {
+    display: block;
+  }
+
+  .recipe-table tr {
+    margin-bottom: 12px;
+    padding: 6px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .recipe-table th,
+  .recipe-table td {
+    border-bottom: 0;
+    padding: 6px 12px;
+  }
+
+  .recipe-table td.numeric {
+    text-align: left;
+  }
+
+  .recipe-table td.numeric::before {
+    content: 'ΔE ';
+    color: var(--text-muted);
+  }
+
+  .recipe-table td:nth-child(2)::before {
+    content: 'Use from your stash';
+    display: block;
+    margin-bottom: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+
+  .cell-with-swatch {
+    min-width: 0;
+  }
+}
+
+.shopping {
+  display: grid;
+  gap: 10px;
+}
+
+.shopping-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.shopping-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ------------------------------------------------------------------- stash */
+
+.stash-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+@media (min-width: 760px) {
+  .stash-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.stash-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.stash-list li.owned {
+  border-color: var(--accent);
+}
+
+.stash-item-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .button,
+  .tab,
+  .segmented button {
+    transition:
+      background-color 0.12s,
+      border-color 0.12s;
+  }
+}
+
+/* Mode switch and "New photo" sit above the picture; everything else goes below it. */
+.primary-bar {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toolbar.tools {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
