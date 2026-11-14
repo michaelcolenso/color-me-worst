@@ -210,7 +210,9 @@ describe('matchSummary', () => {
     expect(formatDeltaE(2.449)).toBe('2.4');
     expect(formatDeltaE(12.96)).toBe('13.0');
     const mix = { itemA: white, itemB: red, ratio: [1, 1] as [number, number] };
-    expect(describeMix({ ...mix, predictedColor: red.color, deltaE00: 0, warnings: [] })).toBe('1 part white : 1 part red');
+    const full = { ...mix, predictedColor: red.color, deltaE00: 0, warnings: [] };
+    expect(describeMix(full)).toBe('1 part white : 1 part red');
+    expect(describeMix(full, { brands: true })).toBe('1 part Brand white : 1 part Brand red');
   });
 
   it('gives sensible answers on the real seed catalogue', () => {

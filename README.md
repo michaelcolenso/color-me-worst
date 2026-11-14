@@ -441,7 +441,7 @@ only "Read a photo" reports that it is not switched on.
 
 ### Verification
 
-- 237 unit tests. 39 are new: the API (validation, limits, origin check,
+- 239 unit tests. 41 are new: the API (validation, limits, origin check,
   error mapping), label matching, PDF structure, card wording and text
   wrapping.
 - The Worker was run in Cloudflare's local runtime (`wrangler dev`) and

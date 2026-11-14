@@ -69,16 +69,12 @@ export function MatchCard({ title, target, summary, note, actions }: MatchCardPr
         {owned?.kind === 'mix' && (
           <>
             <p>
-              <strong>{describeMix(owned.mix)}</strong>
+              <strong>{describeMix(owned.mix, { brands: true })}</strong>
               <span className="delta" title="Predicted CIEDE2000 colour difference of the mix">
                 ΔE {formatDeltaE(owned.mix.deltaE00)}
               </span>
               <br />
-              <span className="item-meta">
-                {owned.mix.itemA.brand}
-                {owned.mix.itemA.brand !== owned.mix.itemB.brand && ` + ${owned.mix.itemB.brand}`} · predicted, so
-                test on a spare surface first
-              </span>
+              <span className="item-meta">Predicted, so test on a spare surface first.</span>
             </p>
             {owned.mix.warnings.map((warning) => (
               <p key={warning} className="warning">

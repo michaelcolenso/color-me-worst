@@ -100,10 +100,23 @@ async function run(label, viewport) {
   // -- bulk import: pasted list (matched on the device, no server) -------------
   await page.getByLabel('Only what I own').uncheck();
   await page.getByText('Add many at once').click();
+  const review = page.locator('.import-review .stash-list li');
+  // A specific entry followed by an ambiguous one with the same first guess:
+  // both must be offered, or the second paint could never be imported.
+  await page.getByLabel('Paste a list of what you own').fill('Monument Hobbies Ivory\nIvory');
+  await page.getByRole('button', { name: 'Find these' }).click();
+  await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
+  assert.equal(await review.count(), 2, 'an ambiguous entry is not merged into an earlier specific one');
+  assert.equal(await review.nth(0).locator('select').count(), 0, 'the specific entry has no choice to make');
+  assert.equal(await review.nth(1).locator('select option').count(), 2, 'the ambiguous entry still offers both brands');
+  await assertVisible(page.getByRole('button', { name: 'Add 1 to my stash' }), 'two rows pointing at one item count once');
+  await review.nth(1).locator('select').selectOption({ label: 'Vallejo Ivory · Model Color' });
+  await assertVisible(page.getByRole('button', { name: 'Add 2 to my stash' }), 'choosing the other brand makes it two items');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+
   await page.getByLabel('Paste a list of what you own').fill('Ivory\nUnicorn Tears\nMephiston Red, Mephiston Red');
   await page.getByRole('button', { name: 'Find these' }).click();
   await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
-  const review = page.locator('.import-review .stash-list li');
   assert.equal(await review.count(), 3, 'three distinct things were read from the list');
   assert.equal(await review.nth(0).locator('select option').count(), 2, 'an ambiguous name offers a choice');
   assert.equal(await review.nth(0).locator('input[type=checkbox]').isChecked(), true, 'a new match is ticked by default');

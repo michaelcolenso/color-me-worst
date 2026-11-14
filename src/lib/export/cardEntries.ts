@@ -3,7 +3,7 @@
  * from the canvas drawing so the wording is unit-tested.
  */
 
-import type { ColorCoordinates } from '../color/types';
+import type { CatalogItem, ColorCoordinates } from '../color/types';
 import { VERDICT_LABELS, describeMix, formatDeltaE, type MatchSummary } from '../match/matchSummary';
 
 export interface CardEntry {
@@ -31,6 +31,11 @@ export interface CardPin {
   summary: MatchSummary;
 }
 
+/** Range and, where it is a real code, product code: enough to pick the right pot off a shelf. */
+function rangeAndCode(item: CatalogItem): string {
+  return /\d/.test(item.sku) ? `${item.line}, ${item.sku}` : item.line;
+}
+
 export function buildCardEntries(pins: readonly CardPin[]): CardEntry[] {
   return pins.map(({ number, x, y, target, summary }) => {
     const { owned, verdict, toBuy } = summary;
@@ -51,18 +56,22 @@ export function buildCardEntries(pins: readonly CardPin[]): CardEntry[] {
       return {
         ...base,
         matchColor: owned.mix.predictedColor,
-        title: describeMix(owned.mix),
-        detail: `${gap}Predicted mix; test on a spare surface first.${buy ? ` ${buy}` : ''}`,
+        // A saved recipe has to say exactly which products to use: brand in
+        // the title, range and code for each ingredient underneath.
+        title: describeMix(owned.mix, { brands: true }),
+        detail:
+          `${gap}${owned.mix.itemA.name}: ${rangeAndCode(owned.mix.itemA)}. ` +
+          `${owned.mix.itemB.name}: ${rangeAndCode(owned.mix.itemB)}. ` +
+          `Predicted mix; test on a spare surface first.${buy ? ` ${buy}` : ''}`,
         note: `${VERDICT_LABELS[verdict]} · dE ${formatDeltaE(owned.mix.deltaE00)}`,
       };
     }
     const item = owned.match.item;
-    const code = /\d/.test(item.sku) ? `, ${item.sku}` : '';
     return {
       ...base,
       matchColor: item.color,
       title: `${item.brand} ${item.name}`,
-      detail: `${gap}${item.line}${code}${buy ? `. ${buy}` : ''}`,
+      detail: `${gap}${rangeAndCode(item)}${buy ? `. ${buy}` : ''}`,
       note: `${VERDICT_LABELS[verdict]} · dE ${formatDeltaE(owned.match.deltaE00)}`,
     };
   });

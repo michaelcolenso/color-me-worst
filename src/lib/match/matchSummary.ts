@@ -84,10 +84,20 @@ export function summarizeMatch(solved: SolvedMatch, mode: MatchMode): MatchSumma
   return summary;
 }
 
-/** "2 parts A : 1 part B" */
-export function describeMix(mix: TwoPartMix): string {
+export interface DescribeMixOptions {
+  /**
+   * Put each ingredient's brand before its name. Different brands sell
+   * paints with the same name ("Ivory", "Black"), so anything a person will
+   * follow as a recipe should set this.
+   */
+  brands?: boolean;
+}
+
+/** "2 parts A : 1 part B", optionally "2 parts Brand A : 1 part Brand B". */
+export function describeMix(mix: TwoPartMix, options: DescribeMixOptions = {}): string {
   const part = (count: number) => (count === 1 ? '1 part' : `${count} parts`);
-  return `${part(mix.ratio[0])} ${mix.itemA.name} : ${part(mix.ratio[1])} ${mix.itemB.name}`;
+  const name = (item: TwoPartMix['itemA']) => (options.brands ? `${item.brand} ${item.name}` : item.name);
+  return `${part(mix.ratio[0])} ${name(mix.itemA)} : ${part(mix.ratio[1])} ${name(mix.itemB)}`;
 }
 
 /** ΔE00 to one decimal, for display. */
