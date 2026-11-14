@@ -10,6 +10,8 @@ import {
   type WorkerLike,
 } from '../../lib/image/imageWorkerClient';
 import { extractLoupePatch, sampleLoupe } from '../../lib/image/loupeSampler';
+import { buildCardEntries } from '../../lib/export/cardEntries';
+import { downloadBlob, recipeCardPdf, recipeCardPng } from '../../lib/export/recipeCard';
 import type { PaletteSwatch } from '../../lib/image/paletteExtractor';
 import { whiteBalanceFromPoint, type WhiteBalance } from '../../lib/image/whiteBalance';
 import { summarizeMatch } from '../../lib/match/matchSummary';
@@ -96,6 +98,8 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const clientRef = useRef<ImageWorkerClient | null>(null);
   const nextPinId = useRef(1);
+  /** Changes whenever the photo or its lighting correction does; stale async results compare against it. */
+  const colourEpoch = useRef(0);
 
   const client = useCallback(() => {
     clientRef.current ??= createClient();
@@ -110,6 +114,14 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   );
 
   const shown = corrected ?? image;
+
+  // A palette's colours have the lighting correction of the moment baked in.
+  // When the photo or the correction changes they no longer describe what is
+  // on screen, so the palette is dropped rather than left to disagree with pins.
+  useEffect(() => {
+    colourEpoch.current += 1;
+    setPalette(null);
+  }, [image, balance]);
 
   // Draw whichever version of the photo is current.
   useEffect(() => {
@@ -307,14 +319,48 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   const extract = async () => {
     if (!image) return;
     setBusy('Finding the main colours…');
+    const epoch = colourEpoch.current;
     try {
       const result = await client().extractPalette(image, {
         count: paletteCount,
         ...(balance ? { whiteBalance: balance.matrix } : {}),
       });
-      setPalette(result.swatches);
+      // Ignore a result computed for lighting that has since changed.
+      if (epoch === colourEpoch.current) setPalette(result.swatches);
     } catch (error) {
       setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Couldn’t extract a palette.' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const exportCard = async (format: 'png' | 'pdf') => {
+    if (!shown || pinResults.length === 0) return;
+    setBusy('Drawing the card…');
+    try {
+      const date = new Date().toISOString().slice(0, 10);
+      const input = {
+        image: shown,
+        entries: buildCardEntries(
+          pinResults.map(({ pin, number, sample, summary }) => ({ number, x: pin.x, y: pin.y, target: sample.color, summary })),
+        ),
+        title: 'Colour recipe',
+        subtitle: [
+          date,
+          mode === 'strict_stash' ? 'matched from my stash only' : 'matched against the full catalogue',
+          balance ? 'lighting corrected' : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        footnote:
+          'dE is the CIEDE2000 colour difference: under 1.5 is not visible, under 3 is a close substitute. ' +
+          'Catalogue colours are community data, not checked against real paint or thread, and mixes are predictions. ' +
+          'Test before you commit. Printed and on-screen colours will differ from the real thing.',
+      };
+      const blob = format === 'png' ? await recipeCardPng(input) : await recipeCardPdf(input);
+      downloadBlob(blob, `colour-recipe-${date}.${format}`);
+    } catch {
+      setNotice({ kind: 'error', text: 'The card couldn’t be created. Try again with fewer pins.' });
     } finally {
       setBusy(null);
     }
@@ -534,6 +580,19 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
         <div className="results" aria-live="polite">
           {pinResults.length === 0 && paletteResults.length === 0 && (
             <p className="muted">Matches for each pin will appear here.</p>
+          )}
+          {pinResults.length > 0 && (
+            <div className="results-heading export-bar">
+              <h3>Save as a recipe card</h3>
+              <div className="button-row">
+                <button type="button" className="button small" onClick={() => void exportCard('png')} disabled={busy !== null}>
+                  PNG
+                </button>
+                <button type="button" className="button small" onClick={() => void exportCard('pdf')} disabled={busy !== null}>
+                  PDF
+                </button>
+              </div>
+            </div>
           )}
           {pinResults.map(({ pin, number, sample, summary }) => (
             <MatchCard

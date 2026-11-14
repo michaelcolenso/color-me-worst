@@ -25,6 +25,7 @@
   },
   "include": [
     "src",
+    "worker",
     "scripts/**/*.ts",
     "tests/**/*.ts",
     "vite.config.ts"

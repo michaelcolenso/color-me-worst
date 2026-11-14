@@ -13,9 +13,9 @@ The project is built in gated phases. Each phase stops for sign-off.
 | --- | --- | --- |
 | 1 | Deterministic colour science and mixing kernel | Done |
 | 2 | Catalogue schema, seed data, local-first store | Done |
-| 3 | Image normalisation and palette extraction | Done, in review |
-| 4 | Interactive UI and "Shop Your Stash" solver | **Done, awaiting sign-off** |
-| 5 | Vision-assisted onboarding and export | Not started |
+| 3 | Image normalisation and palette extraction | Done |
+| 4 | Interactive UI and "Shop Your Stash" solver | Done |
+| 5 | Vision-assisted onboarding and export | **Done, awaiting sign-off; not deployed** |
 
 ## Phase 1: the colour kernel
 
@@ -43,6 +43,7 @@ npm run test:browser   # image pipeline in headless Chromium (needs Playwright i
 npm run dev            # the app, with hot reload
 npm run build          # typecheck, then production bundle in dist/
 npm run test:e2e       # drive the built app in headless Chromium (needs Playwright installed)
+npm run worker:check   # validate and bundle the Cloudflare Worker without deploying
 ```
 
 ### Use it
@@ -309,7 +310,7 @@ works offline after the first visit. Three tabs:
 | `src/app/components/MatchCard.tsx` | One target and the best option for it |
 | `src/lib/catalog/recipeParser.ts` | Resolves free-text lines to catalogue items |
 | `src/lib/match/matchSummary.ts` | Turns a solver result into a verdict and wording |
-| `public/sw.js`, `public/manifest.webmanifest` | Offline support and install metadata |
+| `src/app/serviceWorker.js`, `public/manifest.webmanifest` | Offline support and install metadata; the build writes `/sw.js` with the list of files to cache |
 | `scripts/e2e.mjs` | End-to-end test of the production build |
 
 ### Design decisions
@@ -331,13 +332,14 @@ works offline after the first visit. Three tabs:
 
 ### Verification
 
-- 196 unit tests, including 15 new ones for recipe parsing and verdicts.
+- 198 unit tests, including 17 new ones for recipe parsing and verdicts.
 - `npm run test:e2e` builds the production bundle and drives it in headless
   Chromium at 390 x 844 and 1280 x 900: builds a stash and confirms it survives
   a reload, places, drags, nudges and deletes pins, corrects lighting from the
   grey card, switches match mode, extracts a palette, translates the example
-  recipe, checks the shopping list, confirms the swatch halves touch, reloads
-  with the network off, and checks for sideways scrolling and console errors.
+  recipe, checks the shopping list, confirms the swatch halves touch, confirms
+  every built file is in the offline cache after one visit, reloads with the
+  network off, and checks for sideways scrolling and console errors.
 
 ### Not done, or not verified
 
@@ -350,3 +352,126 @@ works offline after the first visit. Three tabs:
   pins can be moved with arrow keys, but no screen-reader testing was done.
 - Pins and the open photo are not saved between visits (export is Phase 5).
 - No accounts or cross-device sync.
+
+## Phase 5: stash import and recipe card export
+
+### Stash import
+
+Adding a few hundred paints one by one is the main barrier to using the app,
+so the Stash tab has **Add many at once**:
+
+- **Paste a list.** Matched on the device by the same rule-based resolver the
+  recipe translator uses. No server, no model, works offline.
+- **Read a photo** of a paint rack, a box of thread or a handwritten list.
+  This is the only feature that sends anything off the device, and the app
+  says so next to the button.
+
+Either way the user reviews what was found, resolves ambiguous names, and
+confirms before anything is added.
+
+### How the photo path works
+
+```
+photo -> app downsizes to a JPEG (max 1600 px) -> POST /api/ingest
+      -> Claude reads the text on each label into { brand, name, code }
+      -> deterministic matching against the catalogue
+      -> candidates back to the app for review
+```
+
+The model **only reads**. It is told nothing about the catalogue, never picks
+an item and never returns a colour. What it reads is treated as untrusted
+text: cleaned, length-limited, and matched by code. Anything that matches
+nothing is reported as unmatched, and the app ignores any item id its own
+catalogue does not contain.
+
+| Path | What it is |
+| --- | --- |
+| `worker/ingest.ts` | The API: validation, origin check, rate limits, label matching. No Cloudflare or model dependency, so it is fully unit-tested |
+| `worker/vision.ts` | The one model call, using the Anthropic SDK with a JSON schema for the reply |
+| `worker/rateLimiter.ts` | Durable Object that counts photo imports atomically |
+| `worker/index.ts` | Cloudflare Worker entry: serves the built app and answers `/api/*` |
+| `wrangler.jsonc` | Worker configuration |
+| `src/app/components/StashImport.tsx` | Import and review UI |
+
+Safeguards on the endpoint:
+
+- **Cost.** Photo import is refused unless a rate limiter is available, and
+  nothing is spent if the limiter cannot be reached. Defaults are 20 photos
+  per connection per hour and 500 in total per 24 hours. Counting is done by a
+  Durable Object, so simultaneous requests are counted exactly. (A key-value
+  store was the first design; Workers KV rejects more than one write per key
+  per second, which would have failed simultaneous imports.)
+- **Abuse.** Requests from another website's pages are refused; there are no
+  cross-origin headers. Images over 5 MB, other file types, malformed base64
+  and oversized bodies are rejected before any model call.
+- **Privacy.** The Worker does not store the photo or log its contents.
+  Anthropic's own data handling applies to what is sent to the model.
+- **Failure.** Upstream errors are never echoed to the client.
+
+The model is `claude-sonnet-5-5` (the specification named Claude Sonnet),
+overridable with a `VISION_MODEL` variable.
+
+### Recipe card export
+
+With pins placed, **Save as a recipe card** downloads a PNG or a PDF showing
+the photo with numbered pins and, for each pin, the target and match swatches
+touching, the item or mix ratio, the colour difference and the verdict.
+
+| Path | What it is |
+| --- | --- |
+| `src/lib/export/recipeCard.ts` | Draws the card on a canvas at 2400 px wide |
+| `src/lib/export/cardEntries.ts` | The wording of each row |
+| `src/lib/export/pdf.ts` | A dependency-free PDF writer: one page wrapping the card as a JPEG |
+
+The PNG keeps swatch colours exact. The PDF embeds a high-quality JPEG of the
+same drawing, so its colours are very close but not bit-exact.
+
+### Turning photo import on (not done)
+
+Nothing has been deployed and no accounts or keys were created. To go live:
+
+```sh
+npx wrangler secret put ANTHROPIC_API_KEY   # only needed for "Read a photo"
+npm run deploy                              # builds, then deploys
+```
+
+The rate limiter's Durable Object is created by the deploy itself; there is no
+storage to set up by hand. Without the key the app still deploys and works;
+only "Read a photo" reports that it is not switched on.
+
+### Verification
+
+- 237 unit tests. 39 are new: the API (validation, limits, origin check,
+  error mapping), label matching, PDF structure, card wording and text
+  wrapping.
+- The Worker was run in Cloudflare's local runtime (`wrangler dev`) and
+  exercised with HTTP requests: health, text import, photo import refused
+  without a key, foreign origin refused, static app, single-page fallback.
+- The rate limiter was tested in that runtime with 30 simultaneous photo
+  imports from one client against a limit of 20: exactly 20 were let through
+  and 10 refused, with no server errors. (The model endpoint was pointed at a
+  dead local port for this, so no real model call was made.)
+- `npm run worker:check` validates the configuration and bundles the Worker.
+- `npm run test:e2e` now also imports from a pasted list, checks the photo
+  upload is a real JPEG, drives the review screen against a stand-in server,
+  checks the "not switched on" and rate-limit messages, downloads both card
+  formats, reads the swatch colours back out of the PNG and confirms they
+  equal the pin colours exactly, and has an independent PDF reader (poppler)
+  open and render the PDF.
+
+### Not done, or not verified
+
+- **The label reader has never called the real model.** It typechecks against
+  the installed SDK and is tested with a stand-in. How well it reads real
+  racks, small labels or handwriting is unknown until it is run with a key.
+- **Not deployed.** No Worker, KV namespace or secret exists.
+- **Rate limits are keyed by network address**, so people behind one address
+  share an allowance. There are no user accounts.
+- **Durable Objects have not been exercised on Cloudflare itself**, only in
+  the local runtime. Check your plan's Durable Object allowance before relying
+  on it.
+- **The catalogue ships inside the Worker**, so a catalogue change needs a
+  redeploy. The D1 schema from Phase 2 is not wired up yet.
+- **Semantic region detection** ("cloak highlights") from the specification's
+  architecture section is not built; no phase lists it as a deliverable.
+- **No cross-device sync**: the local bookkeeping exists, the server half does not.

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 
 import { ItemMeta } from '../components/MatchCard';
 import { SplitSwatch } from '../components/SplitSwatch';
+import { StashImport } from '../components/StashImport';
 import { useStore } from '../store';
 
 const PAGE = 60;
@@ -50,6 +51,8 @@ export function StashView() {
         </strong>{' '}
         owned.
       </p>
+
+      <StashImport />
 
       <div className="toolbar">
         <label className="field grow">

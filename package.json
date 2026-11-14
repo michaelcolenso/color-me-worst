@@ -14,7 +14,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test:e2e": "node scripts/e2e.mjs"
+    "test:e2e": "node scripts/e2e.mjs",
+    "worker:check": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "deploy": "npm run build && wrangler deploy"
   },
   "engines": {
     "node": ">=20"
@@ -28,10 +30,14 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "wrangler": "^4.160.1"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "hono": "^4.13.18",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
   }
 }
