@@ -228,7 +228,7 @@ export function RecipeView() {
                                 </>
                               ) : (
                                 <>
-                                  <strong>{describeMix(owned.mix)}</strong>
+                                  <strong>{describeMix(owned.mix, { brands: true })}</strong>
                                   <br />
                                   <span className="item-meta">Predicted mix; test before committing.</span>
                                   {owned.mix.warnings.map((warning) => (

@@ -156,7 +156,12 @@ function cleanText(value: unknown, maxLength = 120): string {
     .slice(0, maxLength);
 }
 
-/** Match labels read from a photo against the catalogue, merging repeats of the same item. */
+/**
+ * Match labels read from a photo against the catalogue. Repeats of the same
+ * item are merged, but only when the match is unambiguous: a label that could
+ * be several items is kept as its own entry so the user can choose, even if
+ * its first guess coincides with an earlier entry.
+ */
 export function matchLabels(labels: readonly ExtractedLabel[], resolver: RecipeResolver): IngestEntry[] {
   const entries: IngestEntry[] = [];
   const seen = new Set<string>();
@@ -173,7 +178,8 @@ export function matchLabels(labels: readonly ExtractedLabel[], resolver: RecipeR
       resolved = resolver.resolveLine([brand, name].filter(Boolean).join(' ').replace(/[,;]/g, ' '));
     }
     const entry = toEntry(label, resolved);
-    const key = entry.match ? `item:${entry.match.id}` : `text:${label.toLowerCase()}`;
+    const key =
+      entry.match !== null && entry.alternatives.length === 0 ? `item:${entry.match.id}` : `text:${label.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     entries.push(entry);

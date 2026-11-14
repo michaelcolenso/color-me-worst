@@ -114,6 +114,23 @@ describe('label matching', () => {
     );
   });
 
+  it('keeps an ambiguous label even when its first guess matches an earlier entry', () => {
+    const entries = matchLabels(
+      [
+        { brand: 'Monument Hobbies', name: 'Ivory', code: null },
+        { brand: null, name: 'Ivory', code: null },
+        { brand: null, name: 'Ivory', code: null }, // an exact repeat of an ambiguous label is still merged
+      ],
+      resolver,
+    );
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.match?.brand).toBe('Monument Hobbies');
+    expect(entries[0]?.alternatives).toEqual([]);
+    expect(entries[1]?.alternatives).toHaveLength(1);
+    const offered = [entries[1]?.match?.brand, entries[1]?.alternatives[0]?.brand].sort();
+    expect(offered).toEqual(['Monument Hobbies', 'Vallejo']);
+  });
+
   it('treats model output as untrusted text', () => {
     const entries = matchLabels(
       [

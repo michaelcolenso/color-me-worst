@@ -61,12 +61,16 @@ export function StashImport() {
   );
 
   const present = (found: Array<{ label: string; candidates: CatalogItem[] }>, emptyMessage: string) => {
-    // The same item named twice is one thing to own.
+    // The same item named twice is one thing to own, so repeats are merged.
+    // An entry that could be several items is NOT merged by its first guess:
+    // "Monument Ivory" then plain "Ivory" may well be two different paints,
+    // and the second must stay on screen for the user to choose.
     const seen = new Set<string>();
     const next: ReviewRow[] = [];
     found.forEach(({ label, candidates }, index) => {
       const first = candidates[0];
-      const identity = first ? `item:${first.id}` : `text:${label.toLowerCase()}`;
+      const identity =
+        first !== undefined && candidates.length === 1 ? `item:${first.id}` : `text:${label.trim().toLowerCase()}`;
       if (seen.has(identity)) return;
       seen.add(identity);
       next.push({
@@ -144,15 +148,14 @@ export function StashImport() {
     setRows((current) => current?.map((row) => (row.key === key ? { ...row, ...change } : row)) ?? null);
 
   const chosen = (rows ?? []).filter((row) => row.selected && row.chosenId !== null);
+  /** Distinct ids: two rows may end up pointing at the same item once the user has chosen. */
+  const chosenIds = [...new Set(chosen.map((row) => row.chosenId as string))];
   const unmatched = (rows ?? []).filter((row) => row.candidates.length === 0);
 
   const addChosen = async () => {
     try {
-      await store.setOwnedMany(
-        chosen.map((row) => row.chosenId as string),
-        true,
-      );
-      setNotice({ kind: 'info', text: `Added ${chosen.length} to your stash.` });
+      await store.setOwnedMany(chosenIds, true);
+      setNotice({ kind: 'info', text: `Added ${chosenIds.length} to your stash.` });
       setRows(null);
       setText('');
     } catch {
@@ -266,8 +269,8 @@ export function StashImport() {
               })}
             </ul>
             <div className="button-row">
-              <button type="button" className="button primary" onClick={() => void addChosen()} disabled={chosen.length === 0}>
-                Add {chosen.length} to my stash
+              <button type="button" className="button primary" onClick={() => void addChosen()} disabled={chosenIds.length === 0}>
+                Add {chosenIds.length} to my stash
               </button>
               <button type="button" className="button" onClick={() => setRows(null)}>
                 Cancel

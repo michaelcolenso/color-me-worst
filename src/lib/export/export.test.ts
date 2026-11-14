@@ -120,8 +120,9 @@ describe('buildCardEntries', () => {
   it('describes a mix by its ratio and shows the predicted colour', () => {
     const target = predictMix(white, red, [3, 1]);
     const [entry] = buildCardEntries([pin(target, [white.id, red.id], 'strict_stash')]);
-    expect(entry?.title).toBe('3 parts White : 1 part Red');
-    expect(entry?.detail).toBe('Predicted mix; test on a spare surface first.');
+    // Brand in the title, range and code per ingredient: enough to pick the right pots.
+    expect(entry?.title).toBe('3 parts Brand White : 1 part Brand Red');
+    expect(entry?.detail).toBe('White: Range. Red: Range, 70.957. Predicted mix; test on a spare surface first.');
     expect(entry?.note).toMatch(/^Mix from your stash · dE 0\.0$/);
     expect(entry?.matchColor?.hex).toBe(target.hex);
   });
@@ -142,6 +143,21 @@ describe('buildCardEntries', () => {
     const [strict] = buildCardEntries([pin(red.color, [], 'strict_stash')]);
     expect(strict).toMatchObject({ title: 'Target #9a1115', detail: 'Nothing in the stash to compare.' });
     expect(strict?.matchColor).toBeUndefined();
+  });
+
+  it('tells apart same-named paints from different brands in a mix', () => {
+    const ivoryA = item('ivory-a', '#f1e9d2', { name: 'Ivory', brand: 'Vallejo', line: 'Model Color', sku: '70.918' });
+    const ivoryB = item('ivory-b', '#e9dcc0', { name: 'Ivory', brand: 'Monument Hobbies', line: 'Pro Acryl', sku: '023' });
+    const brown = item('brown', '#4a2f22', { name: 'Brown' });
+    const mixCatalog = [ivoryA, ivoryB, brown];
+    const target = predictMix(ivoryB, brown, [3, 1]);
+    const summary = summarizeMatch(
+      createMatchSolver({ catalog: mixCatalog, ownedIds: [ivoryB.id, brown.id] }).solve(target, { mode: 'strict_stash' }),
+      'strict_stash',
+    );
+    const [entry] = buildCardEntries([{ number: 1, x: 0, y: 0, target, summary }]);
+    expect(entry?.title).toBe('3 parts Monument Hobbies Ivory : 1 part Brand Brown');
+    expect(entry?.detail).toContain('Ivory: Pro Acryl, 023.');
   });
 
   it('keeps pins in order', () => {
