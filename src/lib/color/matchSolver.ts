@@ -220,8 +220,11 @@ export function createMatchSolver(input: MatchSolverInput): MatchSolver {
     }
 
     // Mix search: only when nothing owned is close enough on its own, and only
-    // for targets that paint can reproduce by blending (opaque or transparent
-    // colour, not flake, glow or multi-colour effects).
+    // for solid (opaque, non-effect) colours. The mixing model describes opaque
+    // pigment films; it says nothing reliable about metal flake, fluorescence or
+    // glazes, so those are matched as single items only unless the caller opts
+    // into experimental finishes, and even then such a mix never counts as
+    // covering the target (see `coverage` below).
     const mixTrigger = options.mixTriggerDeltaE ?? MIX_TRIGGER_DELTA_E;
     const minImprovement = options.mixMinImprovement ?? MIX_MIN_IMPROVEMENT;
     const gapLimit = options.gapDeltaE ?? GAP_DELTA_E;
@@ -230,15 +233,16 @@ export function createMatchSolver(input: MatchSolverInput): MatchSolver {
     // A caller may set the gap limit below the mix trigger; a single that
     // misses that stricter limit is not good enough on its own either.
     const singleSuffices = ownedSingleDeltaE < mixTrigger && ownedSingleDeltaE <= gapLimit;
-    if (options.allowMixes !== false && !singleSuffices && preparedOwned.items.length >= 2) {
-      const targetClass = finishClassOf(targetFinish);
+    const targetClass = finishClassOf(targetFinish);
+    const mixSupported = experimentalFinishes || targetClass === 'solid';
+    if (options.allowMixes !== false && mixSupported && !singleSuffices && preparedOwned.items.length >= 2) {
       const mixes = findBestTwoPartMixes(targetColor.lab, preparedOwned, {
         experimentalFinishes,
         limit: 1,
         maxDeltaE: ownedSingleDeltaE,
         eligible: (item) =>
           (options.medium === undefined || item.medium === options.medium) &&
-          (experimentalFinishes || finishClassOf(item.finish) === targetClass),
+          (experimentalFinishes || finishClassOf(item.finish) === 'solid'),
         ...(options.mixRatios !== undefined ? { ratios: options.mixRatios } : {}),
         ...(options.weights !== undefined ? { weights: options.weights } : {}),
       });
@@ -256,9 +260,15 @@ export function createMatchSolver(input: MatchSolverInput): MatchSolver {
     }
 
     const bestOwned = Math.min(ownedSingleDeltaE, bestTwoPartMix?.deltaE00 ?? Number.POSITIVE_INFINITY);
+    // An experimental or effect-finish mix is shown, but it is not evidence
+    // that the user can do without buying something.
+    const mixIsDependable =
+      bestTwoPartMix !== undefined &&
+      !bestTwoPartMix.warnings.includes('experimental_finish') &&
+      !bestTwoPartMix.warnings.includes('effect_finish');
     let coverage: StashCoverage;
     if (singleSuffices) coverage = 'owned_single';
-    else if (bestTwoPartMix !== undefined && bestTwoPartMix.deltaE00 <= gapLimit) coverage = 'owned_mix';
+    else if (mixIsDependable && (bestTwoPartMix as TwoPartMix).deltaE00 <= gapLimit) coverage = 'owned_mix';
     else if (ownedSingleDeltaE <= gapLimit) coverage = 'owned_approximate';
     else coverage = 'gap';
 

@@ -106,7 +106,7 @@ describe('buildCardEntries', () => {
       y: 20,
       title: 'Brand Red',
       detail: 'Range, 70.957',
-      note: 'Exact match · dE 0.0',
+      note: 'Very close colour · dE 0.0',
     });
     expect(entry?.matchColor?.hex).toBe(red.color.hex);
     expect(entry?.target.hex).toBe(red.color.hex);
@@ -122,9 +122,24 @@ describe('buildCardEntries', () => {
     const [entry] = buildCardEntries([pin(target, [white.id, red.id], 'strict_stash')]);
     // Brand in the title, range and code per ingredient: enough to pick the right pots.
     expect(entry?.title).toBe('3 parts Brand White : 1 part Brand Red');
-    expect(entry?.detail).toBe('White: Range. Red: Range, 70.957. Predicted mix; test on a spare surface first.');
+    expect(entry?.detail).toBe('White: Range. Red: Range, 70.957. Estimated mix; test on a spare surface first.');
     expect(entry?.note).toMatch(/^Mix from your stash · dE 0\.0$/);
     expect(entry?.matchColor?.hex).toBe(target.hex);
+  });
+
+  it('prints every mix caveat in full', () => {
+    const target = predictMix(white, red, [3, 1]);
+    const [base] = buildCardEntries([pin(target, [white.id, red.id], 'strict_stash')]);
+    expect(base).toBeDefined();
+    const summary = summarizeMatch(
+      createMatchSolver({ catalog: [white, red], ownedIds: [white.id, red.id] }).solve(target, { mode: 'strict_stash' }),
+      'strict_stash',
+    );
+    if (summary.owned?.kind !== 'mix') throw new Error('expected a mix');
+    summary.owned.mix.warnings = ['low_opacity', 'effect_finish'];
+    const [entry] = buildCardEntries([{ number: 1, x: 0, y: 0, target, summary }]);
+    expect(entry?.detail).toContain('translucent');
+    expect(entry?.detail).toContain('metallic, fluorescent or wash/contrast');
   });
 
   it('says so plainly when the nearest owned option is poor, and names what to buy', () => {

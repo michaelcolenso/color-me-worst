@@ -25,10 +25,19 @@ export interface SeedSourceItem {
   source: string;
   /** Defaults to `community`. */
   colorSource?: ColorSource;
+  /** Ids this item had in earlier revisions, so owners keep it after a rename. */
+  formerIds?: string[];
 }
 
 export interface SeedSource {
   description: string;
+  /**
+   * Catalogue revision. Must be increased whenever the content changes:
+   * browsers only re-import a catalogue whose revision is higher than the one
+   * they hold. scripts/generateSeed.ts refuses to regenerate changed content
+   * at an unchanged revision. Default 1.
+   */
+  revision?: number;
   items: SeedSourceItem[];
 }
 
@@ -111,6 +120,10 @@ export function buildCatalog(source: SeedSource): BuiltCatalog {
     const id = catalogItemId(row.brand, row.line, row.sku);
     if (seen.has(id)) fail(index, `duplicate id "${id}"`);
     seen.add(id);
+    const formerIds = row.formerIds ?? [];
+    if (!Array.isArray(formerIds) || formerIds.some((former) => typeof former !== 'string' || former === '' || former === id)) {
+      fail(index, '"formerIds" must be a list of other item ids');
+    }
 
     let color;
     try {
@@ -136,11 +149,64 @@ export function buildCatalog(source: SeedSource): BuiltCatalog {
       color,
       discontinued: row.discontinued,
       colorSource,
+      ...(formerIds.length > 0 ? { formerIds: [...formerIds] } : {}),
     });
     sourceNotes[id] = row.source;
   });
 
+  const current = new Set(items.map((item) => item.id));
+  const claimed = new Map<string, string>();
+  for (const item of items) {
+    for (const former of item.formerIds ?? []) {
+      if (current.has(former)) throw new Error(`Former id "${former}" of "${item.id}" is still a current id`);
+      const owner = claimed.get(former);
+      if (owner !== undefined) throw new Error(`Former id "${former}" is claimed by both "${owner}" and "${item.id}"`);
+      claimed.set(former, item.id);
+    }
+  }
+
   return { brands: [...brands.values()], items, sourceNotes };
+}
+
+/**
+ * Fingerprint of a catalogue's content, independent of its revision number.
+ * Used to detect content that changed without a revision bump. FNV-1a over
+ * the serialised client bundle, two 32-bit lanes; not cryptographic.
+ */
+export function catalogContentHash(catalog: BuiltCatalog): string {
+  const text = catalogToJson(catalog, 0) + JSON.stringify(catalog.sourceNotes);
+  let a = 0x811c9dc5;
+  let b = 0x01000193 ^ 0x9e3779b9;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    a = Math.imul(a ^ code, 0x01000193) >>> 0;
+    b = Math.imul(b ^ code, 0x01000193 ^ 0x2f) >>> 0;
+  }
+  return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0');
+}
+
+/** Committed record of the last generated revision: data/catalog/catalog.lock.json. */
+export interface CatalogLock {
+  revision: number;
+  contentHash: string;
+}
+
+/**
+ * Decide whether a source may be (re)generated against the last lock.
+ * @returns an error message, or null when generation may proceed.
+ */
+export function checkRevision(revision: number, contentHash: string, lock: CatalogLock | null): string | null {
+  if (!Number.isInteger(revision) || revision < 1) return 'revision must be a whole number of at least 1';
+  if (lock === null) return null;
+  if (revision < lock.revision) return `revision ${revision} is lower than the last generated revision ${lock.revision}`;
+  if (revision === lock.revision && contentHash !== lock.contentHash) {
+    return (
+      `catalogue content changed but the revision is still ${revision}. ` +
+      `Set "revision" in data/catalog/seed-source.json to ${lock.revision + 1}, ` +
+      'or browsers that already hold this revision will never receive the change.'
+    );
+  }
+  return null;
 }
 
 function sqlText(value: string): string {

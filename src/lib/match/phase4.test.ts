@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createRecipeResolver } from '../catalog/recipeParser';
+import { createRecipeResolver, isConfident } from '../catalog/recipeParser';
 import type { CatalogBundle } from '../catalog/seedBuilder';
 import { colorFromHex } from '../color/colorConversions';
 import { createMatchSolver, predictMix } from '../color/index';
@@ -81,6 +81,36 @@ describe('recipeParser', () => {
     expect(vallejo.kind === 'item' && vallejo.alternatives).toEqual([]);
     const monument = resolver.resolveLine('Ivory (Monument)');
     expect(monument.kind === 'item' && monument.item.brand).toBe('Monument Hobbies');
+  });
+
+  it('never confidently resolves contradictory identity evidence', () => {
+    // The review's probe cases: each used to come back as a confident match to the wrong product.
+    for (const line of ['Vallejo Coal Black', 'Monument 70.950', 'Vallejo 70.950 White', 'DMC 999 Black', 'Citadel Black']) {
+      expect(isConfident(resolver.resolveLine(line)), line).toBe(false);
+    }
+    // A named brand is a constraint: Monument's 70.950 is not Vallejo's.
+    expect(resolver.resolveLine('Monument 70.950')).toMatchObject({ kind: 'unknown', reason: expect.stringMatching(/Monument Hobbies/) });
+    expect(resolver.resolveLine('Citadel Black').kind).toBe('unknown');
+    // A code and a name that disagree are both offered.
+    const mixed = resolver.resolveLine('Vallejo 70.950 White');
+    expect(mixed.kind === 'item' && [mixed.item.name, ...mixed.alternatives.map((item) => item.name)]).toEqual(['Black', 'White']);
+    expect(mixed.kind === 'item' && mixed.issue).toMatch(/white/);
+  });
+
+  it('still resolves consistent evidence, with notes and quantities around it', () => {
+    for (const [line, id] of [
+      ['DMC 310 Black', 'dmc:six-strand-cotton-floss:310'],
+      ['Vallejo 70.950 Black', 'vallejo:model-color:70-950'],
+      ['Mephiston Red for the cloak', 'citadel:base:mephiston-red'],
+      ['Mephiston Red 17ml', 'citadel:base:mephiston-red'],
+      ['Coal Black', 'monument-hobbies:pro-acryl:002'],
+    ] as const) {
+      const resolved = resolver.resolveLine(line);
+      expect(isConfident(resolved), line).toBe(true);
+      expect(resolved.kind === 'item' && resolved.item.id, line).toBe(id);
+    }
+    // Two products on one line is a question, not an answer.
+    expect(isConfident(resolver.resolveLine('Mephiston Red and Nuln Oil'))).toBe(false);
   });
 
   it('reads hex colours as direct targets', () => {

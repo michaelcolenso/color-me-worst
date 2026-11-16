@@ -3,7 +3,7 @@
  * from the canvas drawing so the wording is unit-tested.
  */
 
-import type { CatalogItem, ColorCoordinates } from '../color/types';
+import type { CatalogItem, ColorCoordinates, MixWarning } from '../color/types';
 import { VERDICT_LABELS, describeMix, formatDeltaE, type MatchSummary } from '../match/matchSummary';
 
 export interface CardEntry {
@@ -30,6 +30,14 @@ export interface CardPin {
   target: ColorCoordinates;
   summary: MatchSummary;
 }
+
+/** Printed caveats for a mix: what a person following the card must know before mixing. */
+const MIX_WARNING_TEXT: Readonly<Record<MixWarning, string>> = {
+  low_opacity: 'One ingredient is translucent, so the estimate is less reliable.',
+  experimental_finish: 'Mixes different finishes (experimental).',
+  display_clipped: 'The real mix is more vivid than print or screen can show.',
+  effect_finish: 'Uses a metallic, fluorescent or wash/contrast paint: rough colour estimate only.',
+};
 
 /** Range and, where it is a real code, product code: enough to pick the right pot off a shelf. */
 function rangeAndCode(item: CatalogItem): string {
@@ -62,7 +70,9 @@ export function buildCardEntries(pins: readonly CardPin[]): CardEntry[] {
         detail:
           `${gap}${owned.mix.itemA.name}: ${rangeAndCode(owned.mix.itemA)}. ` +
           `${owned.mix.itemB.name}: ${rangeAndCode(owned.mix.itemB)}. ` +
-          `Predicted mix; test on a spare surface first.${buy ? ` ${buy}` : ''}`,
+          `Estimated mix; test on a spare surface first.` +
+          owned.mix.warnings.map((warning) => ` ${MIX_WARNING_TEXT[warning]}`).join('') +
+          `${buy ? ` ${buy}` : ''}`,
         note: `${VERDICT_LABELS[verdict]} · dE ${formatDeltaE(owned.mix.deltaE00)}`,
       };
     }

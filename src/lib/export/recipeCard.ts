@@ -68,7 +68,8 @@ function layoutRows(context: CanvasRenderingContext2D, entries: readonly CardEnt
     context.font = TITLE_FONT;
     const titleLines = wrap(context, entry.title, textWidth);
     context.font = DETAIL_FONT;
-    const detailLines = wrap(context, entry.detail, textWidth, 3);
+    // Details carry product codes and mix caveats, so they are never cut short.
+    const detailLines = wrap(context, entry.detail, textWidth);
     const textHeight = 20 + titleLines.length * TITLE_LINE + detailLines.length * DETAIL_LINE + 12;
     return { titleLines, detailLines, note, height: Math.max(ROW_HEIGHT, textHeight) };
   });

@@ -174,13 +174,16 @@ def main() -> None:
         add("DMC", "Six-Strand Cotton Floss", number, row["description"].strip(),
             "#" + "".join(f"{value:02x}" for value in channels), "embroidery_floss", "matte", 1.0, DMC_SOURCE)
 
+    target = Path(__file__).resolve().parent.parent / "data" / "catalog" / "seed-source.json"
+    # Keep the hand-maintained revision; bump it there when the content changes.
+    previous_revision = json.loads(target.read_text(encoding="utf-8")).get("revision", 1) if target.exists() else 1
     out = {
         "description": "Curated seed sample. Hex, name and code come from the cited community "
                        "datasets and are unverified against physical product. Finish, opacity and "
                        "medium were assigned by hand in scripts/buildSeedSource.py.",
+        "revision": previous_revision,
         "items": items,
     }
-    target = Path(__file__).resolve().parent.parent / "data" / "catalog" / "seed-source.json"
     target.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     counts: dict[str, int] = {}
     for item in items:

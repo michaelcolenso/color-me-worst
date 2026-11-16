@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { displayCaveatOf } from '../../lib/color/matchSolver';
 import type { CatalogItem, ColorCoordinates } from '../../lib/color/types';
 import { VERDICT_LABELS, describeMix, formatDeltaE, type MatchSummary } from '../../lib/match/matchSummary';
-import { CAVEAT_LABELS, FINISH_LABELS, MIX_WARNING_LABELS } from '../labels';
+import { CAVEAT_LABELS, COLOR_SOURCE_LABELS, FINISH_LABELS, MIX_WARNING_LABELS } from '../labels';
 import { SplitSwatch } from './SplitSwatch';
 
 export function itemTitle(item: CatalogItem): string {
@@ -19,6 +19,7 @@ export function ItemMeta({ item }: { item: CatalogItem }) {
       {/\d/.test(item.sku) && ` · ${item.sku}`}
       {item.finish !== 'matte' && <span className="tag">{FINISH_LABELS[item.finish]}</span>}
       {item.discontinued && <span className="tag">Discontinued</span>}
+      <span className="source-note"> · {COLOR_SOURCE_LABELS[item.colorSource ?? 'community']}</span>
       {caveat !== null && (
         <span className="tag caution" title={CAVEAT_LABELS[caveat]}>
           Screen colour is approximate
@@ -59,7 +60,7 @@ export function MatchCard({ title, target, summary, note, actions }: MatchCardPr
         {owned?.kind === 'single' && (
           <p>
             <strong>{itemTitle(owned.match.item)}</strong>
-            <span className="delta" title="CIEDE2000 colour difference; under 1.5 is not visible">
+            <span className="delta" title="CIEDE2000 difference between catalogue colours: under about 1.5 is hard to tell apart, under 3 is close. Only as good as the catalogue colours.">
               ΔE {formatDeltaE(owned.match.deltaE00)}
             </span>
             <br />
@@ -74,7 +75,7 @@ export function MatchCard({ title, target, summary, note, actions }: MatchCardPr
                 ΔE {formatDeltaE(owned.mix.deltaE00)}
               </span>
               <br />
-              <span className="item-meta">Predicted, so test on a spare surface first.</span>
+              <span className="item-meta">Estimated mix, so test on a spare surface first.</span>
             </p>
             {owned.mix.warnings.map((warning) => (
               <p key={warning} className="warning">

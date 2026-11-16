@@ -27,7 +27,8 @@ interface Env {
   ANTHROPIC_BASE_URL?: string;
 }
 
-const catalog = (seedJson as unknown as CatalogBundle).items;
+const bundle = seedJson as unknown as CatalogBundle;
+const catalog = bundle.items;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -36,6 +37,7 @@ export default {
 
     const app = createIngestApp({
       catalog,
+      catalogRevision: bundle.revision,
       ...(env.ANTHROPIC_API_KEY
         ? {
             extract: createClaudeVisionExtractor({

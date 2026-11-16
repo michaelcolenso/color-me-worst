@@ -278,6 +278,12 @@ describe('colorConversions', () => {
 // ---------------------------------------------------------------------------
 
 describe('deltaE2000', () => {
+  it('propagates invalid input instead of reporting a perfect match', () => {
+    expect(deltaE2000([Number.NaN, 0, 0], [50, 0, 0])).toBeNaN();
+    expect(deltaE2000([50, Number.NaN, 0], [50, 0, 0])).toBeNaN();
+    expect(deltaE2000([50, 0, 0], [50, 0, 0])).toBe(0);
+  });
+
   it('has all 34 Sharma et al. (2005) reference pairs', () => {
     expect(SHARMA_PAIRS).toHaveLength(34);
   });
@@ -734,6 +740,40 @@ describe('matchSolver', () => {
 
     const metallicTarget = solveMatch('#b8860b', input, { targetFinish: 'metallic' });
     expect(metallicTarget.bestSingleMatches.map((match) => match.item.name)).toEqual(['gold']);
+  });
+
+  it('never treats a metallic, fluorescent or transparent mix as covering a target', () => {
+    // Reproduces the review probe: a target made by the model from two
+    // metallics used to come back as an ordinary owned mix with no warning.
+    const gold = makeItem('#c9a227', { finish: 'metallic', name: 'gold' });
+    const silver = makeItem('#a8a9ad', { finish: 'metallic', name: 'silver' });
+    const target = predictMix(gold, silver, [1, 1]);
+    const input = { catalog: [gold, silver], ownedIds: [gold.id, silver.id] };
+
+    const metallic = solveMatch(target, input, { targetFinish: 'metallic' });
+    expect(metallic.bestTwoPartMix).toBeUndefined();
+    expect(metallic.coverage).not.toBe('owned_mix');
+
+    // Opting into experimental finishes shows the mix, flagged, but it still does not count.
+    const experimental = solveMatch(target, input, { targetFinish: 'metallic', experimentalFinishes: true });
+    expect(experimental.bestTwoPartMix?.warnings).toContain('effect_finish');
+    expect(experimental.coverage).not.toBe('owned_mix');
+
+    const washA = makeItem('#2a3b4c', { finish: 'wash', name: 'wash a', opacity: 0.3 });
+    const washB = makeItem('#6a2b1c', { finish: 'wash', name: 'wash b', opacity: 0.3 });
+    const washes = solveMatch(predictMix(washA, washB, [1, 1]), { catalog: [washA, washB], ownedIds: [washA.id, washB.id] }, {
+      targetFinish: 'wash',
+    });
+    expect(washes.bestTwoPartMix).toBeUndefined();
+  });
+
+  it('still mixes solid paints for a solid target', () => {
+    const red = makeItem('#c0392b', { name: 'red' });
+    const white = makeItem('#f4f4f4', { name: 'white' });
+    const target = predictMix(red, white, [1, 2]);
+    const solved = solveMatch(target, { catalog: [red, white], ownedIds: [red.id, white.id] });
+    expect(solved.coverage).toBe('owned_mix');
+    expect(solved.bestTwoPartMix?.warnings).toEqual([]);
   });
 
   it('ranks the full catalogue but flags ownership, and restricts to owned items in strict mode', () => {

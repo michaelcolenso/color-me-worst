@@ -9,6 +9,16 @@
  * hex code. Nothing is guessed; a line that matches nothing is reported as
  * unknown, and a line that matches several paints equally well is flagged so
  * the user can choose.
+ *
+ * Identity evidence is checked for consistency, not just scored:
+ *   - a brand named in the line restricts the candidates to that brand, so
+ *     "Monument 70.950" can never resolve to Vallejo's 70.950;
+ *   - when the best candidate leaves part of the line unexplained, and that
+ *     part is itself identity evidence (a product code, or a colour word from
+ *     some other product's name), the line is returned with an `issue` rather
+ *     than as a confident match: "Vallejo 70.950 White" names one paint by
+ *     code and another by name. Callers must ask the user before acting on a
+ *     line that has an issue or alternatives.
  */
 
 import { colorFromHex } from '../color/colorConversions';
@@ -20,11 +30,31 @@ export type ResolvedRecipeLine =
       /** The text as the user wrote it. */
       raw: string;
       item: CatalogItem;
-      /** Other catalogue items that matched equally well, best guess excluded. */
+      /**
+       * Other candidates, best guess excluded: items that matched equally
+       * well, or, when there is an `issue`, the other items the line could
+       * refer to.
+       */
       alternatives: CatalogItem[];
+      /**
+       * Present when the line contains evidence that contradicts `item`, e.g.
+       * a second product code or another paint's colour name. `item` is then
+       * only a suggestion and must be confirmed by the user.
+       */
+      issue?: string;
     }
   | { kind: 'color'; raw: string; label: string; color: ColorCoordinates }
-  | { kind: 'unknown'; raw: string };
+  | {
+      kind: 'unknown';
+      raw: string;
+      /** Why nothing matched, when there is something more useful to say than "not found". */
+      reason?: string;
+    };
+
+/** True when a resolved line can be acted on without asking the user. */
+export function isConfident(line: ResolvedRecipeLine): boolean {
+  return line.kind === 'color' || (line.kind === 'item' && line.alternatives.length === 0 && line.issue === undefined);
+}
 
 /** Extra words that identify a brand or range in the wild. Keys are catalogue brand names. */
 const BRAND_ALIASES: Readonly<Record<string, readonly string[]>> = {
@@ -91,8 +121,24 @@ function stripDecorations(line: string): string {
   return line
     .replace(/^\s*(?:[-*•–—]+\s*|\d+[.)]\s+)/, '')
     .replace(/\b\d+\s*x\b|\bx\s*\d+\b/gi, ' ')
-    .replace(/\(\s*\d+\s*(?:pots?|bottles?|skeins?|ml)?\s*\)/gi, ' ');
+    .replace(/\(\s*\d+\s*(?:pots?|bottles?|skeins?|ml)?\s*\)/gi, ' ')
+    .replace(/\b\d+\s*ml\b/gi, ' ');
 }
+
+/**
+ * Words that commonly sit next to a paint name in a tutorial without saying
+ * anything about which product it is.
+ */
+const FILLER_WORDS: ReadonlySet<string> = new Set(
+  (
+    'a an and as at by for from in into of on or the then to with ' +
+    'paint paints colour color pot pots bottle dropper thinned thin layer base shade wash ' +
+    'highlight highlights edge glaze basecoat coat coats mix mixed parts part'
+  ).split(' '),
+);
+
+/** Up to this many other candidates are offered when a line has an issue. */
+const ISSUE_ALTERNATIVES = 4;
 
 /**
  * Build a resolver for a catalogue. Indexing is done once; resolving a line
@@ -112,6 +158,29 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
       skuIsDistinctive: /[a-z.]/.test(sku) || sku.replace(/\D/g, '').length >= 5,
     };
   });
+
+  // Phrases that name a brand (not a range: "Base" or "Layer" say nothing about who made it).
+  const brandPhrases = new Map<string, string[]>();
+  for (const item of catalog) {
+    if (brandPhrases.has(item.brand)) continue;
+    brandPhrases.set(item.brand, [item.brand, ...(BRAND_ALIASES[item.brand] ?? [])].map(normalise).filter(Boolean));
+  }
+  /** Every word of every product name: a word from this set that the chosen item does not explain is a conflict. */
+  const nameWords = new Set(indexed.flatMap((entry) => entry.nameTokens));
+
+  function explains(entry: IndexedItem, token: string): boolean {
+    if (entry.ownWords.has(token) || FILLER_WORDS.has(token)) return true;
+    if (token.length < 4) return false;
+    for (const word of entry.ownWords) if (word.length >= 5 && withinOneEdit(token, word)) return true;
+    return false;
+  }
+
+  /** Words in the line that identify some product other than `entry`. */
+  function conflictingWords(entry: IndexedItem, tokens: readonly string[], brandWords: ReadonlySet<string>): string[] {
+    return tokens.filter(
+      (token) => !brandWords.has(token) && !explains(entry, token) && (/\d/.test(token) || nameWords.has(token)),
+    );
+  }
 
   function resolveLine(line: string): ResolvedRecipeLine {
     return resolveEntry(line).resolved;
@@ -133,9 +202,22 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
     const tokenSet = new Set(tokens);
     const padded = ` ${text} `;
 
+    const mentionedBrands = new Set<string>();
+    const brandWords = new Set<string>();
+    for (const [brand, phrases] of brandPhrases) {
+      for (const phrase of phrases) {
+        if (!padded.includes(` ${phrase} `)) continue;
+        mentionedBrands.add(brand);
+        for (const word of phrase.split(' ')) brandWords.add(word);
+      }
+    }
+
     let bestScore = 0;
     let best: IndexedItem[] = [];
+    const scored: { entry: IndexedItem; score: number }[] = [];
     for (const entry of indexed) {
+      // A named brand is a constraint, not a hint.
+      if (mentionedBrands.size > 0 && !mentionedBrands.has(entry.item.brand)) continue;
       const hasContext = entry.contextPhrases.some((phrase) => padded.includes(` ${phrase} `));
       let score = 0;
 
@@ -160,6 +242,7 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
 
       if (score === 0) continue;
       if (hasContext) score += 5;
+      scored.push({ entry, score });
       if (score > bestScore) {
         bestScore = score;
         best = [entry];
@@ -169,12 +252,36 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
     }
 
     const winner = best[0];
-    if (winner === undefined) return { resolved: { kind: 'unknown', raw } };
+    if (winner === undefined) {
+      if (mentionedBrands.size === 0) return { resolved: { kind: 'unknown', raw } };
+      const named = [...mentionedBrands].sort().join(' or ');
+      return {
+        resolved: { kind: 'unknown', raw, reason: `Nothing by ${named} in the catalogue matches this.` },
+      };
+    }
     // Prefer an item still on sale when otherwise tied.
     best.sort((a, b) => Number(a.item.discontinued) - Number(b.item.discontinued));
     const chosen = best[0] as IndexedItem;
+    const conflicts = conflictingWords(chosen, tokens, brandWords);
+    if (conflicts.length === 0) {
+      return {
+        resolved: { kind: 'item', raw, item: chosen.item, alternatives: best.slice(1).map((entry) => entry.item) },
+        winner: chosen,
+      };
+    }
+    const others = scored
+      .filter(({ entry }) => entry !== chosen)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, ISSUE_ALTERNATIVES)
+      .map(({ entry }) => entry.item);
     return {
-      resolved: { kind: 'item', raw, item: chosen.item, alternatives: best.slice(1).map((entry) => entry.item) },
+      resolved: {
+        kind: 'item',
+        raw,
+        item: chosen.item,
+        alternatives: others,
+        issue: `“${conflicts.join(' ')}” doesn’t fit ${chosen.item.brand} ${chosen.item.name}. Check which product is meant.`,
+      },
       winner: chosen,
     };
   }
@@ -192,7 +299,7 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
     const pieces = line.split(',').filter((piece) => piece.trim() !== '');
     const whole = resolveEntry(line);
     const owner = whole.winner;
-    if (owner !== undefined && whole.resolved.kind === 'item' && whole.resolved.alternatives.length === 0) {
+    if (owner !== undefined && isConfident(whole.resolved)) {
       const describesOwnerOnly = pieces.every((piece) =>
         tokenise(stripDecorations(piece)).every((word) => owner.ownWords.has(word)),
       );

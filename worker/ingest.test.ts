@@ -20,8 +20,8 @@ import {
 const catalog = (seedBundle as unknown as CatalogBundle).items;
 const resolver = createRecipeResolver(catalog);
 
-/** A tiny valid base64 payload standing in for an image. */
-const IMAGE = { mediaType: 'image/jpeg', data: 'AAAA' };
+/** The first bytes of a JPEG (FF D8 FF E0): enough to pass the signature check. */
+const IMAGE = { mediaType: 'image/jpeg', data: '/9j/4A==' };
 
 /** A limiter that records what it was asked, on top of the real in-memory one. */
 function recordingLimiter(now: () => number = Date.now): RateLimiter & { keys: string[] } {
@@ -94,8 +94,35 @@ describe('label matching', () => {
     ).toEqual(['unmatched:Acme Unicorn Tears']);
   });
 
-  it('falls back to the name when the code was misread', () => {
-    expect(ids([{ brand: 'Vallejo', name: 'Flat Red', code: '7O.9S7' }])).toEqual(['vallejo:model-color:70-957']);
+  it('falls back to the name when the code was misread, but flags it for review', () => {
+    const [misread] = matchLabels([{ brand: 'Vallejo', name: 'Flat Red', code: '7O.9S7' }], resolver);
+    expect(misread?.match?.id).toBe('vallejo:model-color:70-957');
+    expect(misread?.issue).toBeDefined();
+    // A code that matches nothing at all (not even a near miss) is retried by name, also flagged.
+    const [unknownCode] = matchLabels([{ brand: 'Citadel', name: 'Mephiston Red', code: 'ZZ-999' }], resolver);
+    expect(unknownCode?.match?.id).toBe('citadel:base:mephiston-red');
+    expect(unknownCode?.issue).toBeDefined();
+  });
+
+  it('never resolves contradictory labels to a confident match', () => {
+    const entries = matchLabels(
+      [
+        { brand: 'Vallejo', name: 'Coal Black', code: null },
+        { brand: 'Monument', name: null, code: '70.950' },
+        { brand: 'Vallejo', name: 'White', code: '70.950' },
+        { brand: 'DMC', name: 'Black', code: '999' },
+        { brand: 'Citadel', name: 'Black', code: null },
+      ],
+      resolver,
+    );
+    expect(entries).toHaveLength(5);
+    for (const entry of entries) {
+      const confident = entry.match !== null && entry.alternatives.length === 0 && entry.issue === undefined;
+      expect(confident, entry.label).toBe(false);
+    }
+    // Brand words constrain: Monument's "70.950" is not Vallejo's.
+    expect(entries[1]?.match).toBeNull();
+    expect(entries[1]?.reason).toMatch(/Monument Hobbies/);
   });
 
   it('merges repeats of the same product and flags ambiguous names', () => {
@@ -298,6 +325,9 @@ describe('POST /api/ingest with an image', () => {
       [{ image: { mediaType: 'image/png', data: 'AAA' } }, 400, 'invalid_request'],
       [{ image: { mediaType: 'image/png', data: '' } }, 400, 'invalid_request'],
       [{ image: 'AAAA' }, 400, 'invalid_request'],
+      // Declared as one format, bytes of another (or of nothing).
+      [{ image: { mediaType: 'image/png', data: IMAGE.data } }, 415, 'unsupported_image'],
+      [{ image: { mediaType: 'image/jpeg', data: 'AAAA' } }, 415, 'unsupported_image'],
       [{ image: { mediaType: 'image/png', data: 'A'.repeat(Math.ceil(((MAX_IMAGE_BYTES + 3) * 4) / 3 / 4) * 4) } }, 413, 'too_large'],
     ];
     for (const [body, status, code] of bad) {
@@ -343,9 +373,51 @@ describe('request validation', () => {
     expect((await post({ text: 'Nuln Oil' })).status).toBe(200);
   });
 
+  it('stops reading a body without a Content-Length once it passes the cap', async () => {
+    const { app, calls } = setup();
+    let pulled = 0;
+    const chunk = new TextEncoder().encode('x'.repeat(1024 * 1024));
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 64) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const response = await app.request('http://app.test/api/ingest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: stream,
+      duplex: 'half',
+    } as RequestInit);
+    expect(response.status).toBe(413);
+    expect(await errorCode(response)).toBe('too_large');
+    // About 7 MB is the cap; nowhere near all 64 MB should have been read.
+    expect(pulled).toBeLessThan(16);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('counts the cap in bytes, so multi-byte text is not undercounted', async () => {
+    const { post } = setup();
+    // 3 bytes per character: under the cap in characters, over it in bytes.
+    const body = JSON.stringify({ text: '€'.repeat(3_000_000) });
+    const response = await post(body);
+    expect(response.status).toBe(413);
+  });
+
+  it('echoes the catalogue revision so a client can detect a mismatch', async () => {
+    const { app } = { app: createIngestApp({ catalog, catalogRevision: 7 }) };
+    const response = await app.request('http://app.test/api/ingest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Nuln Oil' }),
+    });
+    expect(((await response.json()) as IngestResponse).catalogRevision).toBe(7);
+  });
+
   it('reports health and whether photo import is configured', async () => {
     const ready = await setup().app.request('http://app.test/api/health');
-    expect(await ready.json()).toEqual({ ok: true, catalogSize: catalog.length, photoImport: true });
+    expect(await ready.json()).toEqual({ ok: true, catalogSize: catalog.length, catalogRevision: 0, photoImport: true });
     const textOnly = await setup({ extract: undefined }).app.request('http://app.test/api/health');
     expect(((await textOnly.json()) as { photoImport: boolean }).photoImport).toBe(false);
     expect((await setup().app.request('http://app.test/api/nope')).status).toBe(404);

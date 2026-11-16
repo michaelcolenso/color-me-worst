@@ -15,11 +15,25 @@ function serviceWorker(): Plugin {
   return {
     name: 'color-me-worst:service-worker',
     apply: 'build',
+    // Run after Vite has emitted index.html, so its bytes are part of the version.
+    enforce: 'post',
     generateBundle(_options, bundle) {
       const built = Object.keys(bundle).filter((file) => !file.endsWith('.map') && file !== 'index.html');
-      const copied = readdirSync(resolve(import.meta.dirname, 'public'));
+      const publicDir = resolve(import.meta.dirname, 'public');
+      const copied = readdirSync(publicDir);
       const files = ['/', ...[...built, ...copied].sort().map((file) => `/${file}`)];
-      const version = createHash('sha256').update(JSON.stringify(files)).digest('hex').slice(0, 12);
+      // Version from the bytes of every file, not just the names: the page
+      // and the files in public/ keep their names between releases, so a
+      // change to them alone would otherwise never reach installed copies.
+      const hash = createHash('sha256').update(JSON.stringify(files));
+      for (const name of Object.keys(bundle).sort()) {
+        if (name.endsWith('.map')) continue;
+        const output = bundle[name];
+        if (output === undefined) continue;
+        hash.update(name).update(output.type === 'chunk' ? output.code : output.source);
+      }
+      for (const name of [...copied].sort()) hash.update(name).update(readFileSync(resolve(publicDir, name)));
+      const version = hash.digest('hex').slice(0, 12);
       const template = readFileSync(resolve(import.meta.dirname, 'src/app/serviceWorker.js'), 'utf8');
       const source = template
         .replace('self.__PRECACHE_MANIFEST__', JSON.stringify(files))

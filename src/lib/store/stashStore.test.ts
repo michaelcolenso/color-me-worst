@@ -355,6 +355,21 @@ describe('StashStore: matching', () => {
     expect(solved.coverage).toBe('owned_single');
   });
 
+  it('keeps a zero-quantity item listed but never matches or mixes with it', async () => {
+    const store = await openSeeded();
+    const red = idOf(store, 'mephiston');
+    await store.setOwned(red, true, { quantity: 0 });
+    expect(store.isOwned(red)).toBe(true);
+    expect(store.queryCatalog({ owned: true }).rows.map((row) => row.item.id)).toEqual([red]);
+    expect(store.availableIds().has(red)).toBe(false);
+    const solver = store.getSolver();
+    expect(solver.ownedCount).toBe(0);
+    expect(solver.solve(store.getItem(red)!.color).bestOwnedSingle).toBeUndefined();
+
+    await store.setOwned(red, true, { quantity: 1 });
+    expect(store.getSolver().ownedCount).toBe(1);
+  });
+
   it('does not offer a seed metallic for a matte target of the same colour', async () => {
     const store = await openSeeded();
     const gold = store.getItem('citadel:base:retributor-armour') as CatalogItem;
@@ -506,6 +521,121 @@ describe('StashStore: persistence', () => {
     expect(await other.loadCatalogRevision()).toBe(0);
     expect(await other.loadStash()).toEqual([]);
     other.close();
+  });
+
+  it('tells subscribers when saving fails and when it recovers, and reports why', async () => {
+    const adapter = createMemoryAdapter();
+    const store = await openSeeded(adapter);
+    const red = idOf(store, 'mephiston');
+    const original = adapter.putStash.bind(adapter);
+    let fail = true;
+    adapter.putStash = (entries) => (fail ? Promise.reject(new Error('disk full')) : original(entries));
+    const seen: Array<boolean> = [];
+    store.subscribe(() => seen.push(store.hasUnpersistedChanges));
+
+    await expect(store.setOwned(red, true)).rejects.toThrow('disk full');
+    expect(store.hasUnpersistedChanges).toBe(true);
+    expect(store.persistenceError).toBe('disk full');
+    // One notification for the edit itself, one for "now unsaved".
+    expect(seen.at(-1)).toBe(true);
+
+    fail = false;
+    const before = seen.length;
+    await store.retryPersistence();
+    expect(store.hasUnpersistedChanges).toBe(false);
+    expect(store.persistenceError).toBeNull();
+    expect(seen.length).toBe(before + 1);
+    expect(seen.at(-1)).toBe(false);
+  });
+
+  it('keeps two tabs on one database in step', async () => {
+    const factory = new IDBFactory();
+    const sent: string[][] = [];
+    const first = await StashStore.open(await createIndexedDbAdapter({ factory }), {
+      onPersisted: (ids) => sent.push(ids),
+    });
+    await first.importCatalog(seed.items, seed.revision);
+    const second = await StashStore.open(await createIndexedDbAdapter({ factory }));
+    const red = idOf(first, 'mephiston');
+
+    await first.setOwned(red, true);
+    expect(sent).toEqual([[red]]);
+    expect(second.isOwned(red)).toBe(false); // not yet told
+    expect(await second.refreshFromStorage()).toBe(1);
+    expect(second.isOwned(red)).toBe(true);
+    expect(second.getSolver().ownedCount).toBe(1);
+
+    // A removal travels the same way, and a refresh with nothing new changes nothing.
+    await first.setOwned(red, false);
+    await second.refreshFromStorage();
+    expect(second.isOwned(red)).toBe(false);
+    expect(await second.refreshFromStorage()).toBe(0);
+
+    // Last write wins per item: a newer edit in the second tab is not undone by an older stored copy.
+    let clock = 10_000;
+    const third = await StashStore.open(await createIndexedDbAdapter({ factory }), { now: () => clock });
+    await third.setOwned(red, true, { quantity: 4 });
+    clock = 1; // the first tab's clock is behind
+    await first.refreshFromStorage();
+    expect(first.getStashEntry(red)?.quantity).toBe(4);
+    first.close();
+    second.close();
+    third.close();
+  });
+
+  it('keeps ownership through a catalogue update, including renamed items', async () => {
+    const factory = new IDBFactory();
+    const v1 = [item('brand:line:old-red', '#aa0000'), item('brand:line:blue', '#0000aa')];
+    let store = await StashStore.open(await createIndexedDbAdapter({ factory }));
+    await store.importCatalog(v1, 1);
+    await store.setOwnedMany(['brand:line:old-red', 'brand:line:blue'], true, { quantity: 2 });
+    store.close();
+
+    // v2 corrects the blue's colour and renames the red, keeping its old id as a former id.
+    const v2 = [
+      item('brand:line:new-red', '#ab0000', { formerIds: ['brand:line:old-red'] }),
+      item('brand:line:blue', '#0000ab'),
+    ];
+    store = await StashStore.open(await createIndexedDbAdapter({ factory }));
+    expect(store.catalogRevision).toBe(1);
+    await store.importCatalog(v2, 2);
+    store.close();
+
+    store = await StashStore.open(await createIndexedDbAdapter({ factory }));
+    expect(store.catalogRevision).toBe(2);
+    expect(store.getItem('brand:line:blue')?.color.hex).toBe('#0000ab');
+    expect(store.isOwned('brand:line:blue')).toBe(true);
+    expect(store.isOwned('brand:line:new-red')).toBe(true);
+    expect(store.getStashEntry('brand:line:new-red')?.quantity).toBe(2);
+    expect(store.isOwned('brand:line:old-red')).toBe(false);
+    expect(store.getStashEntry('brand:line:old-red')?.deleted).toBe(true);
+    store.close();
+  });
+
+  it('round-trips a backup without undoing newer edits', async () => {
+    let clock = 1000;
+    const store = await openSeeded(createMemoryAdapter(), () => clock);
+    const red = idOf(store, 'mephiston');
+    const oil = idOf(store, 'nuln oil');
+    await store.setOwned(red, true, { quantity: 2, note: 'half empty' });
+    await store.setOwned(oil, true);
+    const backup = JSON.parse(JSON.stringify(store.exportBackup()));
+
+    const fresh = await openSeeded();
+    expect(await fresh.restoreBackup(backup)).toBe(2);
+    expect(fresh.getStashEntry(red)).toMatchObject({ quantity: 2, note: 'half empty', deleted: false, dirty: true });
+    expect(fresh.isOwned(oil)).toBe(true);
+
+    // A later removal survives restoring the older backup.
+    clock = 5000;
+    await store.setOwned(oil, false);
+    await store.restoreBackup(backup);
+    expect(store.isOwned(oil)).toBe(false);
+
+    await expect(fresh.restoreBackup({ format: 'something-else', entries: [] })).rejects.toThrow(/not a Color Me Worst/);
+    await expect(
+      fresh.restoreBackup({ ...backup, entries: [{ itemId: red, quantity: -1, updatedAt: 1, deleted: false }] }),
+    ).rejects.toThrow(/malformed/);
   });
 
   it('reports a clear error when IndexedDB is unavailable', async () => {

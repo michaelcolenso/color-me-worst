@@ -8,11 +8,14 @@ import { colorFromHex } from '../color/colorConversions';
 import type { CatalogItem } from '../color/types';
 import {
   buildCatalog,
+  catalogContentHash,
   catalogItemId,
   catalogToJson,
   catalogToSql,
+  checkRevision,
   slugify,
   type CatalogBundle,
+  type CatalogLock,
   type SeedSource,
   type SeedSourceItem,
 } from './seedBuilder';
@@ -101,10 +104,44 @@ describe('seedBuilder', () => {
 
   it('keeps the committed seed files in step with the source', () => {
     // If this fails, run `npm run seed:generate` and commit the result.
-    expect(committedSql).toBe(catalogToSql(catalog));
-    expect(read('src/data/catalogSeed.json')).toBe(catalogToJson(catalog));
-    expect(committedBundle.revision).toBe(1);
+    expect(committedSql).toBe(catalogToSql(catalog, source.revision));
+    expect(read('src/data/catalogSeed.json')).toBe(catalogToJson(catalog, source.revision));
+    expect(committedBundle.revision).toBe(source.revision);
     expect(committedBundle.items).toHaveLength(catalog.items.length);
+  });
+
+  it('never ships changed catalogue content under an unchanged revision', () => {
+    // If this fails, increase "revision" in data/catalog/seed-source.json and
+    // run `npm run seed:generate`. Browsers only re-import a higher revision.
+    const lock = JSON.parse(read('data/catalog/catalog.lock.json')) as CatalogLock;
+    expect(lock.revision).toBe(source.revision);
+    expect(lock.contentHash).toBe(catalogContentHash(catalog));
+  });
+
+  it('refuses a content change without a revision bump, and accepts one with it', () => {
+    const lock: CatalogLock = { revision: 3, contentHash: 'aaaa' };
+    expect(checkRevision(3, 'aaaa', lock)).toBeNull();
+    expect(checkRevision(3, 'bbbb', lock)).toMatch(/still 3.*to 4/);
+    expect(checkRevision(4, 'bbbb', lock)).toBeNull();
+    expect(checkRevision(2, 'bbbb', lock)).toMatch(/lower/);
+    expect(checkRevision(1, 'x', null)).toBeNull();
+    expect(checkRevision(0, 'x', null)).toMatch(/at least 1/);
+
+    // Any edit to an item changes the fingerprint; rebuilding the same input does not.
+    const base = { description: '', items: [row()] };
+    expect(catalogContentHash(buildCatalog(base))).toBe(catalogContentHash(buildCatalog(base)));
+    expect(catalogContentHash(buildCatalog({ ...base, items: [row({ hex: '#123457' })] }))).not.toBe(
+      catalogContentHash(buildCatalog(base)),
+    );
+  });
+
+  it('validates former ids', () => {
+    const one = (overrides: Partial<SeedSourceItem>, second?: Partial<SeedSourceItem>) =>
+      buildCatalog({ description: '', items: second ? [row(overrides), row(second)] : [row(overrides)] });
+    expect(one({ formerIds: ['brand:line:old'] }).items[0]?.formerIds).toEqual(['brand:line:old']);
+    expect(() => one({ formerIds: [''] })).toThrow(/formerIds/);
+    expect(() => one({ formerIds: ['brand:line:002'] }, { sku: '002', name: 'Other' })).toThrow(/still a current id/);
+    expect(() => one({ formerIds: ['x'] }, { sku: '002', name: 'Other', formerIds: ['x'] })).toThrow(/claimed by both/);
   });
 });
 
