@@ -700,6 +700,42 @@ describe('StashStore: persistence', () => {
     expect(store.isOwned('brand:line:old2')).toBe(false);
   });
 
+  it('applies a newer former-id edit to a live current entry, and keeps a newer current one', async () => {
+    let clock = 100;
+    const store = await StashStore.open(createMemoryAdapter(), { now: () => clock });
+    await store.importCatalog([item('brand:line:new', '#aa0000', { formerIds: ['brand:line:old'] })], 2);
+    await store.setOwned('brand:line:new', true, { quantity: 1 }); // live at 100
+    clock = 1000;
+    const backup = (entries: RemoteStashEntry[]) => ({
+      format: 'color-me-worst/stash-backup@1',
+      exportedAt: new Date(0).toISOString(),
+      catalogRevision: 1,
+      entries,
+    });
+    await store.restoreBackup(backup([{ itemId: 'brand:line:old', quantity: 8, updatedAt: 300, deleted: false }]));
+    expect(store.getStashEntry('brand:line:new')?.quantity).toBe(8);
+
+    await store.restoreBackup(backup([{ itemId: 'brand:line:old', quantity: 2, updatedAt: 200, deleted: false }]));
+    expect(store.getStashEntry('brand:line:new')?.quantity).toBe(8); // older: ignored
+  });
+
+  it('lets a later restore supply a newer edit under a former id', async () => {
+    const store = await StashStore.open(createMemoryAdapter(), { now: () => 1000 });
+    await store.importCatalog([item('brand:line:new', '#aa0000', { formerIds: ['brand:line:old'] })], 2);
+    const backup = (quantity: number, updatedAt: number) => ({
+      format: 'color-me-worst/stash-backup@1',
+      exportedAt: new Date(updatedAt).toISOString(),
+      catalogRevision: 1,
+      entries: [{ itemId: 'brand:line:old', quantity, updatedAt, deleted: false }],
+    });
+    await store.restoreBackup(backup(1, 100));
+    expect(store.getStashEntry('brand:line:new')?.quantity).toBe(1);
+    // Migration ran at clock 1000, but the edit it moved was made at 100: a 300 edit is newer.
+    expect(await store.restoreBackup(backup(5, 300))).toBeGreaterThan(0);
+    expect(store.getStashEntry('brand:line:new')?.quantity).toBe(5);
+    expect(store.isOwned('brand:line:old')).toBe(false);
+  });
+
   it('finishes a rename migration on the next start if its save failed', async () => {
     const factory = new IDBFactory();
     let store = await StashStore.open(await createIndexedDbAdapter({ factory }));

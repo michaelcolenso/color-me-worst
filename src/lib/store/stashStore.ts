@@ -364,30 +364,32 @@ export class StashStore {
    * Move stash entries recorded under an item's former id (before a rename or
    * a corrected code) onto its current id, so a catalogue update never makes
    * an owned item silently disappear from matching.
+   *
+   * This is last-write-wins, like every other merge here, and it keeps the
+   * time of the edit being moved rather than the time the move happened:
+   * the newest former-id entry replaces the current entry only if it is
+   * newer, and the former-id entries become tombstones just one tick newer
+   * than themselves, so a genuinely later edit under a former id (from an
+   * older device or another backup) still wins and is moved in turn.
    */
   private async migrateFormerIds(items: readonly CatalogItem[]): Promise<void> {
-    const timestamp = this.now();
     const changed: StashEntry[] = [];
     for (const item of items) {
-      // Every live entry under any former id goes; only the newest of them
-      // can carry over, whatever order the former ids are listed in.
       let newest: StashEntry | undefined;
       for (const former of item.formerIds ?? []) {
         const old = this.stash.get(former);
         if (old === undefined || old.deleted) continue;
         if (newest === undefined || old.updatedAt > newest.updatedAt) newest = old;
-        changed.push({ ...old, updatedAt: this.stamp(timestamp, old), deleted: true, dirty: true });
+        changed.push({ ...old, updatedAt: old.updatedAt + 1, deleted: true, dirty: true });
       }
       if (newest === undefined) continue;
       const current = this.stash.get(item.id);
-      // Last write wins here too: a removal under the current id that is
-      // newer than the former-id entry stands; an older one gives way.
-      if (current === undefined || (current.deleted && current.updatedAt < newest.updatedAt)) {
+      if (current === undefined || current.updatedAt < newest.updatedAt) {
         changed.push({
           itemId: item.id,
           quantity: newest.quantity,
           ...(newest.note !== undefined ? { note: newest.note } : {}),
-          updatedAt: this.stamp(timestamp, current),
+          updatedAt: newest.updatedAt,
           deleted: false,
           dirty: true,
         });
