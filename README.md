@@ -44,7 +44,7 @@ before it was fixed, and each fix has a test that fails without it.
 | Matching re-ran for every pin on every drag; recipe re-ran per keystroke | Pin results are cached by colour, stash version and options; recipe matching waits for a 250 ms pause in typing. |
 | `deltaE2000(NaN, …)` returned 0, a perfect match | It now returns NaN. |
 | Quantity-zero items still satisfied matches | Only items with quantity above zero are offered as matches or mix ingredients; they stay on the list. |
-| No CI | `.github/workflows/ci.yml` runs unit tests (including catalogue/seed/schema checks), build, Worker bundle check, browser smoke and end-to-end tests. In CI a skipped PDF check fails. |
+| No CI | `docs/ci/github-actions-ci.yml` (move it to `.github/workflows/ci.yml` to enable it) runs unit tests (including catalogue/seed/schema checks), build, Worker bundle check, browser smoke and end-to-end tests. In CI a skipped PDF check fails. |
 
 Checked and not changed: the dependency versions flagged as "ahead of stable"
 (`typescript` 7.0.2, `vite` 8.3.8, `vitest` 5.1.0 and the rest) are each the

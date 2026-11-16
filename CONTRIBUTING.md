@@ -21,7 +21,7 @@ sudo apt-get install -y poppler-utils   # or your platform's equivalent
 
 ## Before opening a pull request
 
-Run what CI runs (`.github/workflows/ci.yml`):
+Run what CI runs (`docs/ci/github-actions-ci.yml`, to be moved to `.github/workflows/ci.yml`):
 
 ```sh
 npm test               # unit tests, including catalogue, seed and schema checks
