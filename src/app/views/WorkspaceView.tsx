@@ -9,12 +9,12 @@ import {
   type ImageWorkerClient,
   type WorkerLike,
 } from '../../lib/image/imageWorkerClient';
-import { extractLoupePatch, sampleLoupe } from '../../lib/image/loupeSampler';
+import { extractLoupePatch, sampleLoupe, type LoupeSample } from '../../lib/image/loupeSampler';
 import { buildCardEntries } from '../../lib/export/cardEntries';
 import { downloadBlob, recipeCardPdf, recipeCardPng } from '../../lib/export/recipeCard';
 import type { PaletteSwatch } from '../../lib/image/paletteExtractor';
 import { whiteBalanceFromPoint, type WhiteBalance } from '../../lib/image/whiteBalance';
-import { summarizeMatch } from '../../lib/match/matchSummary';
+import { summarizeMatch, type MatchSummary } from '../../lib/match/matchSummary';
 import { MatchCard } from '../components/MatchCard';
 import { MEDIUM_LABELS } from '../labels';
 import { createSampleImage } from '../sampleImage';
@@ -28,6 +28,17 @@ interface Pin {
 }
 
 type Tool = 'pin' | 'neutral';
+
+/** One pin's reading: a sampled colour and its match, or why it could not be sampled. */
+type PinResult =
+  | { pin: Pin; number: number; ok: true; sample: LoupeSample; summary: MatchSummary }
+  | { pin: Pin; number: number; ok: false; error: string };
+
+/** The corrected rendering of a photo, tagged with the correction it was made for. */
+interface CorrectedImage {
+  balance: WhiteBalance;
+  data: ImageData;
+}
 type Notice = { kind: 'info' | 'error'; text: string };
 
 const MAX_PINS = 24;
@@ -81,7 +92,7 @@ interface WorkspaceViewProps {
 export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   const { store, version } = useStore();
   const [image, setImage] = useState<ImageData | null>(null);
-  const [corrected, setCorrected] = useState<ImageData | null>(null);
+  const [corrected, setCorrected] = useState<CorrectedImage | null>(null);
   const [balance, setBalance] = useState<WhiteBalance | null>(null);
   const [tool, setTool] = useState<Tool>('pin');
   const [pins, setPins] = useState<Pin[]>([]);
@@ -98,8 +109,14 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const clientRef = useRef<ImageWorkerClient | null>(null);
   const nextPinId = useRef(1);
+  /** A pin to focus after the next render. */
+  const focusPin = useRef<number | null>(null);
   /** Changes whenever the photo or its lighting correction does; stale async results compare against it. */
   const colourEpoch = useRef(0);
+  /** Changes whenever a different photo is loaded (or a load starts); stale photo-level results compare against it. */
+  const photoEpoch = useRef(0);
+  /** Solved matches by colour and options, reused while the stash and options are unchanged. */
+  const solveCache = useRef<{ key: string; results: Map<string, MatchSummary> }>({ key: '', results: new Map() });
 
   const client = useCallback(() => {
     clientRef.current ??= createClient();
@@ -113,7 +130,11 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
     [],
   );
 
-  const shown = corrected ?? image;
+  // Only show a corrected rendering made for the current correction. While a
+  // new one is being drawn, show the uncorrected photo rather than one made for
+  // an earlier correction, which would disagree with the pins' readings.
+  const shown = balance && corrected?.balance === balance ? corrected.data : image;
+  const redrawing = balance !== null && corrected?.balance !== balance;
 
   // A palette's colours have the lighting correction of the moment baked in.
   // When the photo or the correction changes they no longer describe what is
@@ -143,7 +164,7 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
       .applyWhiteBalance(image, balance.matrix)
       .then(
         (result) => {
-          if (!stale) setCorrected(toImageData(result));
+          if (!stale) setCorrected({ balance, data: toImageData(result) });
         },
         () => {
           if (!stale) setNotice({ kind: 'error', text: 'Couldn’t redraw the corrected photo. Matches still use the correction.' });
@@ -155,6 +176,7 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
   }, [image, balance, client]);
 
   const adopt = useCallback((next: ImageData) => {
+    photoEpoch.current += 1;
     setImage(next);
     setCorrected(null);
     setBalance(null);
@@ -171,12 +193,17 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
         setNotice({ kind: 'error', text: 'That file isn’t an image. Choose a JPEG, PNG or WebP photo.' });
         return;
       }
+      // A newer load (or the sample) supersedes this one, whichever finishes first.
+      const epoch = ++photoEpoch.current;
       setBusy('Reading photo…');
       setNotice(null);
       try {
-        adopt(await decodeImage(file));
+        const decoded = await decodeImage(file);
+        if (epoch === photoEpoch.current) adopt(decoded);
       } catch {
-        setNotice({ kind: 'error', text: 'This browser couldn’t read that photo. Try saving it as a JPEG or PNG.' });
+        if (epoch === photoEpoch.current) {
+          setNotice({ kind: 'error', text: 'This browser couldn’t read that photo. Try saving it as a JPEG or PNG.' });
+        }
       } finally {
         setBusy(null);
       }
@@ -201,25 +228,50 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
 
   const solveOptions = useMemo(() => ({ mode, ...(medium !== 'all' ? { medium } : {}) }), [mode, medium]);
 
-  const pinResults = useMemo(() => {
-    if (!image) return [];
-    const solver = store.getSolver();
-    return pins.map((pin, index) => {
-      const sample = sampleLoupe(image, pin.x, pin.y, {
-        kernel,
-        ...(balance ? { whiteBalance: balance.matrix } : {}),
-      });
-      return { pin, number: index + 1, sample, summary: summarizeMatch(solver.solve(sample.color, solveOptions), mode) };
-    });
+  /**
+   * Solve one colour, reusing earlier answers. Dragging one pin re-samples
+   * every pin, but only the moved one has a new colour, so only it is solved
+   * again. The cache is dropped whenever the stash or the options change.
+   */
+  const solveColour = useCallback(
+    (color: LoupeSample['color']): MatchSummary => {
+      const key = `${version}|${mode}|${medium}`;
+      if (solveCache.current.key !== key) solveCache.current = { key, results: new Map() };
+      const colourKey = color.lab.join(',');
+      let summary = solveCache.current.results.get(colourKey);
+      if (summary === undefined) {
+        summary = summarizeMatch(store.getSolver().solve(color, solveOptions), mode);
+        solveCache.current.results.set(colourKey, summary);
+      }
+      return summary;
+    },
     // `version` changes whenever the store's contents do; the store object itself does not.
-  }, [image, pins, kernel, balance, solveOptions, mode, store, version]);
+    [store, version, mode, medium, solveOptions],
+  );
+
+  const pinResults = useMemo<PinResult[]>(() => {
+    if (!image) return [];
+    return pins.map((pin, index): PinResult => {
+      const number = index + 1;
+      try {
+        const sample = sampleLoupe(image, pin.x, pin.y, {
+          kernel,
+          ...(balance ? { whiteBalance: balance.matrix } : {}),
+        });
+        return { pin, number, ok: true, sample, summary: solveColour(sample.color) };
+      } catch {
+        // E.g. every pixel under the pin is transparent. Keep the pin so it can
+        // be moved or removed; the other pins are unaffected.
+        return { pin, number, ok: false, error: 'Nothing to measure here: this part of the image is transparent.' };
+      }
+    });
+  }, [image, pins, kernel, balance, solveColour]);
+  const sampledPins = pinResults.filter((result): result is Extract<PinResult, { ok: true }> => result.ok);
 
   const paletteResults = useMemo(() => {
     if (!palette) return [];
-    const solver = store.getSolver();
-    return palette.map((swatch) => ({ swatch, summary: summarizeMatch(solver.solve(swatch.color, solveOptions), mode) }));
-    // `version` changes whenever the store's contents do; the store object itself does not.
-  }, [palette, solveOptions, mode, store, version]);
+    return palette.map((swatch) => ({ swatch, summary: solveColour(swatch.color) }));
+  }, [palette, solveColour]);
 
   const pointFromEvent = (event: { clientX: number; clientY: number }) => {
     const canvas = canvasRef.current;
@@ -227,35 +279,63 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
     return clientToImagePoint(canvas, image, event.clientX, event.clientY);
   };
 
+  /** Correct the lighting so that the point (x, y) of the photo becomes neutral. */
+  const applyNeutralAt = (x: number, y: number) => {
+    if (!image) return;
+    try {
+      const next = whiteBalanceFromPoint(image, x, y);
+      setBalance(next);
+      setTool('pin');
+      setNotice(
+        next.castChroma > 40
+          ? {
+              kind: 'error',
+              text: 'That point is strongly coloured, so it probably isn’t neutral. Colours may now look wrong: pick a grey or white area, or reset.',
+            }
+          : next.castChroma < 2
+            ? { kind: 'info', text: 'That point was already neutral, so nothing needed correcting.' }
+            : { kind: 'info', text: 'Lighting cast removed. Pins now read the corrected colours.' },
+      );
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Couldn’t use that point.' });
+    }
+  };
+
+  const addPin = (x: number, y: number): number | null => {
+    if (pins.length >= MAX_PINS) {
+      setNotice({ kind: 'error', text: `You can place up to ${MAX_PINS} pins. Remove one to add another.` });
+      return null;
+    }
+    const id = nextPinId.current++;
+    setPins((current) => [...current, { id, x, y }]);
+    return id;
+  };
+
+  /** Keyboard and screen-reader route to a first pin: place it mid-photo, then move it with the arrow keys. */
+  const addPinAtCentre = () => {
+    if (!image) return;
+    const id = addPin(Math.floor(image.width / 2), Math.floor(image.height / 2));
+    if (id === null) return;
+    setNotice({ kind: 'info', text: `Pin added in the middle of the photo. Use the arrow keys to move it (Shift moves faster).` });
+    focusPin.current = id;
+  };
+
+  // Focus a pin added from the keyboard once it has rendered, so the arrow keys move it.
+  useEffect(() => {
+    const id = focusPin.current;
+    if (id === null) return;
+    focusPin.current = null;
+    document.querySelector<HTMLButtonElement>(`[data-pin-id="${id}"]`)?.focus();
+  }, [pins]);
+
   const handleCanvasClick = (event: { clientX: number; clientY: number }) => {
     const point = pointFromEvent(event);
     if (!point || !image) return;
     if (tool === 'neutral') {
-      try {
-        const next = whiteBalanceFromPoint(image, point.x, point.y);
-        setBalance(next);
-        setTool('pin');
-        setNotice(
-          next.castChroma > 40
-            ? {
-                kind: 'error',
-                text: 'That point is strongly coloured, so it probably isn’t neutral. Colours may now look wrong: pick a grey or white area, or reset.',
-              }
-            : next.castChroma < 2
-              ? { kind: 'info', text: 'That point was already neutral, so nothing needed correcting.' }
-              : { kind: 'info', text: 'Lighting cast removed. Pins now read the corrected colours.' },
-        );
-      } catch (error) {
-        setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Couldn’t use that point.' });
-      }
+      applyNeutralAt(point.x, point.y);
       return;
     }
-    if (pins.length >= MAX_PINS) {
-      setNotice({ kind: 'error', text: `You can place up to ${MAX_PINS} pins. Remove one to add another.` });
-      return;
-    }
-    const id = nextPinId.current++;
-    setPins((current) => [...current, { id, ...point }]);
+    addPin(point.x, point.y);
   };
 
   const movePin = (id: number, x: number, y: number) => {
@@ -302,15 +382,23 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
 
   const autoBalance = async () => {
     if (!image) return;
+    const epoch = photoEpoch.current;
+    const lighting = colourEpoch.current;
     setBusy('Estimating the light…');
     try {
-      setBalance(await client().autoWhiteBalance(image));
+      const estimate = await client().autoWhiteBalance(image);
+      // The user may have opened another photo, or set the light by hand,
+      // while this ran; the estimate must not overwrite either.
+      if (epoch !== photoEpoch.current || lighting !== colourEpoch.current) return;
+      setBalance(estimate);
       setNotice({
         kind: 'info',
         text: 'Automatic correction applied. It is an estimate: for accuracy, pick a neutral point instead.',
       });
     } catch (error) {
-      setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Automatic correction failed.' });
+      if (epoch === photoEpoch.current) {
+        setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Automatic correction failed.' });
+      }
     } finally {
       setBusy(null);
     }
@@ -328,21 +416,23 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
       // Ignore a result computed for lighting that has since changed.
       if (epoch === colourEpoch.current) setPalette(result.swatches);
     } catch (error) {
-      setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Couldn’t extract a palette.' });
+      if (epoch === colourEpoch.current) {
+        setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Couldn’t extract a palette.' });
+      }
     } finally {
       setBusy(null);
     }
   };
 
   const exportCard = async (format: 'png' | 'pdf') => {
-    if (!shown || pinResults.length === 0) return;
+    if (!shown || sampledPins.length === 0 || redrawing) return;
     setBusy('Drawing the card…');
     try {
       const date = new Date().toISOString().slice(0, 10);
       const input = {
         image: shown,
         entries: buildCardEntries(
-          pinResults.map(({ pin, number, sample, summary }) => ({ number, x: pin.x, y: pin.y, target: sample.color, summary })),
+          sampledPins.map(({ pin, number, sample, summary }) => ({ number, x: pin.x, y: pin.y, target: sample.color, summary })),
         ),
         title: 'Colour recipe',
         subtitle: [
@@ -353,8 +443,8 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
           .filter(Boolean)
           .join(' · '),
         footnote:
-          'dE is the CIEDE2000 colour difference: under 1.5 is not visible, under 3 is a close substitute. ' +
-          'Catalogue colours are community data, not checked against real paint or thread, and mixes are predictions. ' +
+          'dE is the CIEDE2000 difference between catalogue colours: under about 1.5 is hard to tell apart, under 3 is close. ' +
+          'Catalogue colours are community data, not checked against real paint or thread, and mixes are estimates. ' +
           'Test before you commit. Printed and on-screen colours will differ from the real thing.',
       };
       const blob = format === 'png' ? await recipeCardPng(input) : await recipeCardPdf(input);
@@ -473,28 +563,36 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
                   : 'Reference photo. Tap to place a colour pin.'
               }
             />
-            {pinResults.map(({ pin, number, sample }) => (
-              <button
-                key={pin.id}
-                type="button"
-                className={`pin${activePin === pin.id ? ' active' : ''}`}
-                style={{
-                  left: `${((pin.x + 0.5) / image.width) * 100}%`,
-                  top: `${((pin.y + 0.5) / image.height) * 100}%`,
-                  backgroundColor: sample.color.hex,
-                }}
-                aria-label={`Pin ${number}, colour ${sample.color.hex}. Drag or use arrow keys to move, Delete to remove.`}
-                onPointerDown={(event) => handlePinPointerDown(event, pin.id)}
-                onPointerMove={(event) => handlePinPointerMove(event, pin.id)}
-                onPointerUp={handlePinPointerUp}
-                onPointerCancel={handlePinPointerUp}
-                onKeyDown={(event) => handlePinKey(event, pin)}
-                onFocus={() => setActivePin(pin.id)}
-                onBlur={() => setActivePin((current) => (current === pin.id ? null : current))}
-              >
-                {number}
-              </button>
-            ))}
+            {pinResults.map((result) => {
+              const { pin, number } = result;
+              return (
+                <button
+                  key={pin.id}
+                  type="button"
+                  data-pin-id={pin.id}
+                  className={`pin${activePin === pin.id ? ' active' : ''}${result.ok ? '' : ' unsampled'}`}
+                  style={{
+                    left: `${((pin.x + 0.5) / image.width) * 100}%`,
+                    top: `${((pin.y + 0.5) / image.height) * 100}%`,
+                    ...(result.ok ? { backgroundColor: result.sample.color.hex } : {}),
+                  }}
+                  aria-label={
+                    result.ok
+                      ? `Pin ${number}, colour ${result.sample.color.hex}. Drag or use arrow keys to move, Delete to remove.`
+                      : `Pin ${number}, on a transparent area. Drag or use arrow keys to move, Delete to remove.`
+                  }
+                  onPointerDown={(event) => handlePinPointerDown(event, pin.id)}
+                  onPointerMove={(event) => handlePinPointerMove(event, pin.id)}
+                  onPointerUp={handlePinPointerUp}
+                  onPointerCancel={handlePinPointerUp}
+                  onKeyDown={(event) => handlePinKey(event, pin)}
+                  onFocus={() => setActivePin(pin.id)}
+                  onBlur={() => setActivePin((current) => (current === pin.id ? null : current))}
+                >
+                  {number}
+                </button>
+              );
+            })}
             {activeResult && shown && (
               <div
                 className={`loupe-holder${activeResult.pin.y / image.height < 0.3 ? ' below' : ''}`}
@@ -511,7 +609,10 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
             {pins.length === 0
               ? 'Tap the photo to drop a pin on a colour.'
               : 'Drag a pin to fine-tune it. The outlined square in the magnifier is what gets measured.'}
-            {balance && ' Lighting correction is on.'}
+            {balance && ' Lighting correction is on.'}{' '}
+            <button type="button" className="link" onClick={addPinAtCentre}>
+              Add a pin in the middle
+            </button>
           </p>
           <div className="toolbar tools" role="toolbar" aria-label="Photo tools">
           <label className="field">
@@ -581,37 +682,66 @@ export function WorkspaceView({ mode, onModeChange }: WorkspaceViewProps) {
           {pinResults.length === 0 && paletteResults.length === 0 && (
             <p className="muted">Matches for each pin will appear here.</p>
           )}
-          {pinResults.length > 0 && (
+          {sampledPins.length > 0 && (
             <div className="results-heading export-bar">
               <h3>Save as a recipe card</h3>
               <div className="button-row">
-                <button type="button" className="button small" onClick={() => void exportCard('png')} disabled={busy !== null}>
+                <button type="button" className="button small" onClick={() => void exportCard('png')} disabled={busy !== null || redrawing}>
                   PNG
                 </button>
-                <button type="button" className="button small" onClick={() => void exportCard('pdf')} disabled={busy !== null}>
+                <button type="button" className="button small" onClick={() => void exportCard('pdf')} disabled={busy !== null || redrawing}>
                   PDF
                 </button>
               </div>
             </div>
           )}
-          {pinResults.map(({ pin, number, sample, summary }) => (
-            <MatchCard
-              key={pin.id}
-              title={`Pin ${number}`}
-              target={sample.color}
-              summary={summary}
-              note={
-                sample.spread > 3 ? (
-                  <p className="warning">This pin sits on an edge or texture. Move it onto a flat area for a reliable reading.</p>
-                ) : undefined
-              }
-              actions={
-                <button type="button" className="icon-button" onClick={() => removePin(pin.id)} aria-label={`Remove pin ${number}`}>
-                  ×
-                </button>
-              }
-            />
-          ))}
+          {pinResults.map((result) => {
+            const { pin, number } = result;
+            const remove = (
+              <button type="button" className="icon-button" onClick={() => removePin(pin.id)} aria-label={`Remove pin ${number}`}>
+                ×
+              </button>
+            );
+            if (!result.ok) {
+              return (
+                <article key={pin.id} className="match-card" data-verdict="empty">
+                  <header className="match-card-header">
+                    <h3>{`Pin ${number}`}</h3>
+                    {remove}
+                  </header>
+                  <p className="warning">{result.error} Move the pin onto the picture, or remove it.</p>
+                </article>
+              );
+            }
+            const { sample, summary } = result;
+            return (
+              <MatchCard
+                key={pin.id}
+                title={`Pin ${number}`}
+                target={sample.color}
+                summary={summary}
+                note={
+                  sample.spread > 3 ? (
+                    <p className="warning">This pin sits on an edge or texture. Move it onto a flat area for a reliable reading.</p>
+                  ) : undefined
+                }
+                actions={
+                  <>
+                    <button
+                      type="button"
+                      className="button small"
+                      onClick={() => applyNeutralAt(pin.x, pin.y)}
+                      aria-label={`Use pin ${number} as the neutral point`}
+                      title="Treat the colour under this pin as grey or white, and correct the lighting to match"
+                    >
+                      Use as neutral
+                    </button>
+                    {remove}
+                  </>
+                }
+              />
+            );
+          })}
           {paletteResults.length > 0 && (
             <>
               <div className="results-heading">

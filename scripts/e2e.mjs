@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deflateSync } from 'node:zlib';
 
 import { build, preview } from 'vite';
 
@@ -54,6 +55,47 @@ function hasTool(name) {
   } catch {
     return false;
   }
+}
+
+/**
+ * A PNG whose left half is fully transparent and right half opaque red:
+ * transparent margins are ordinary in PNGs, and sampling them must not break the app.
+ */
+function halfTransparentPng(width = 64, height = 48) {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (bytes) => {
+    let c = 0xffffffff;
+    for (const byte of bytes) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const check = Buffer.alloc(4);
+    check.writeUInt32BE(crc(body));
+    return Buffer.concat([length, body, check]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 6, 0, 0, 0], 8); // 8-bit RGBA
+  const rows = [];
+  for (let y = 0; y < height; y++) {
+    const row = Buffer.alloc(1 + width * 4);
+    for (let x = 0; x < width; x++) if (x >= width / 2) row.set([200, 30, 30, 255], 1 + x * 4);
+    rows.push(row);
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(Buffer.concat(rows))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
 /** Click a point given in image pixels, whatever size the canvas is drawn at. */
@@ -108,9 +150,11 @@ async function run(label, viewport) {
   await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
   assert.equal(await review.count(), 2, 'an ambiguous entry is not merged into an earlier specific one');
   assert.equal(await review.nth(0).locator('select').count(), 0, 'the specific entry has no choice to make');
-  assert.equal(await review.nth(1).locator('select option').count(), 2, 'the ambiguous entry still offers both brands');
+  assert.equal(await review.nth(1).locator('select option').count(), 3, 'the ambiguous entry offers both brands and no default');
+  await assertVisible(page.getByRole('button', { name: 'Add 1 to my stash' }), 'an unchosen ambiguous entry is not added');
+  await review.nth(1).locator('select').selectOption({ label: 'Monument Hobbies Ivory · Pro Acryl · 023' });
   await assertVisible(page.getByRole('button', { name: 'Add 1 to my stash' }), 'two rows pointing at one item count once');
-  await review.nth(1).locator('select').selectOption({ label: 'Vallejo Ivory · Model Color' });
+  await review.nth(1).locator('select').selectOption({ label: 'Vallejo Ivory · Model Color · 70.918' });
   await assertVisible(page.getByRole('button', { name: 'Add 2 to my stash' }), 'choosing the other brand makes it two items');
   await page.getByRole('button', { name: 'Cancel' }).click();
 
@@ -118,8 +162,12 @@ async function run(label, viewport) {
   await page.getByRole('button', { name: 'Find these' }).click();
   await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
   assert.equal(await review.count(), 3, 'three distinct things were read from the list');
-  assert.equal(await review.nth(0).locator('select option').count(), 2, 'an ambiguous name offers a choice');
-  assert.equal(await review.nth(0).locator('input[type=checkbox]').isChecked(), true, 'a new match is ticked by default');
+  assert.equal(await review.nth(0).locator('select option').count(), 3, 'an ambiguous name offers a choice');
+  assert.equal(await review.nth(0).locator('input[type=checkbox]').isChecked(), false, 'an ambiguous name is not ticked by default');
+  assert.equal(await review.nth(0).locator('input[type=checkbox]').isDisabled(), true, 'it cannot be added until chosen');
+  await assertVisible(page.getByRole('button', { name: 'Add 0 to my stash' }), 'nothing uncertain is added by default');
+  await review.nth(0).locator('select').selectOption({ label: 'Vallejo Ivory · Model Color · 70.918' });
+  assert.equal(await review.nth(0).locator('input[type=checkbox]').isChecked(), true, 'choosing a product ticks it');
   assert.equal(await review.nth(1).locator('input[type=checkbox]').isDisabled(), true, 'an unrecognised line cannot be added');
   await assertVisible(review.nth(1).getByText('Not in the catalogue'), 'an unrecognised line is reported');
   await assertVisible(review.nth(2).getByText('Already owned'), 'an owned item is marked');
@@ -130,7 +178,7 @@ async function run(label, viewport) {
 
   // -- bulk import: photo ---------------------------------------------------------
   // The preview server has no API, as on any static host: the app must say so plainly.
-  const photoInput = page.locator('.import input[type=file]');
+  const photoInput = page.locator('.import input[type=file][accept="image/*"]');
   await photoInput.setInputFiles(join(root, 'public/icon-512.png'));
   await assertVisible(page.getByText('Photo import isn’t switched on for this site yet'), 'a missing API is explained');
 
@@ -147,6 +195,14 @@ async function run(label, viewport) {
           { label: 'DMC Black 310', match: { id: 'dmc:six-strand-cotton-floss:310' }, alternatives: [] },
           { label: 'Mystery Pot', match: null, alternatives: [] },
           { label: 'Ghost', match: { id: 'not:in:this-catalogue' }, alternatives: [] },
+          {
+            label: 'Vallejo White 70.950',
+            match: { id: 'vallejo:model-color:70-950' },
+            alternatives: [{ id: 'vallejo:model-color:70-951' }],
+            issue: '“white” doesn’t fit Vallejo Black. Check which product is meant.',
+          },
+          // Ambiguous on the server, but this device knows only one of the candidates.
+          { label: 'Ivory', match: { id: 'vallejo:model-color:70-918' }, alternatives: [{ id: 'not:in:this-catalogue' }] },
         ],
       }),
     });
@@ -157,7 +213,11 @@ async function run(label, viewport) {
   const jpegHead = Buffer.from(sent.image.data, 'base64').subarray(0, 2);
   assert.deepEqual([...jpegHead], [0xff, 0xd8], 'the upload really is JPEG data, base64 encoded');
   assert.equal(sent.text, undefined, 'only the image is sent');
-  assert.equal(await review.count(), 3, 'each label the server read is listed');
+  assert.equal(await review.count(), 5, 'each label the server read is listed');
+  assert.equal(await review.nth(4).locator('select option').count(), 2, 'an uncertain row with one known candidate can still be chosen');
+  assert.equal(await review.nth(4).locator('input[type=checkbox]').isChecked(), false, 'and is not ticked until it is');
+  assert.equal(await review.nth(3).locator('input[type=checkbox]').isChecked(), false, 'a contradictory label is not ticked');
+  await assertVisible(review.nth(3).getByText('doesn’t fit Vallejo Black'), 'the contradiction is shown');
   await assertVisible(review.nth(0).getByText('DMC Black'), 'a matched label shows the catalogue item');
   assert.equal(await review.nth(2).locator('input[type=checkbox]').isDisabled(), true, 'an id this catalogue does not know is not added');
   await page.getByRole('button', { name: 'Add 1 to my stash' }).click();
@@ -174,6 +234,33 @@ async function run(label, viewport) {
   );
   await photoInput.setInputFiles(join(root, 'public/icon-512.png'));
   await assertVisible(page.getByText('Too many photos from this connection'), 'a rate limit is explained');
+  await page.unroute('**/api/ingest');
+
+  // A slow photo answer must not replace a list the user pasted in the meantime.
+  let releasePhoto;
+  const photoAnswered = new Promise((done) => (releasePhoto = done));
+  await page.route('**/api/ingest', async (route) => {
+    await photoAnswered;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        source: 'image',
+        catalogRevision: 1,
+        entries: [{ label: 'DMC Black 310', match: { id: 'dmc:six-strand-cotton-floss:310' }, alternatives: [] }],
+      }),
+    }).catch(() => undefined); // the page may have aborted the request
+  });
+  await photoInput.setInputFiles(join(root, 'public/icon-512.png'));
+  await assertVisible(page.getByText('Reading labels…'), 'a photo read shows progress');
+  await page.getByLabel('Paste a list of what you own').fill('Unicorn Tears');
+  await page.getByRole('button', { name: 'Find these' }).click();
+  await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
+  releasePhoto();
+  await page.waitForTimeout(500);
+  assert.equal(await review.count(), 1, 'the late photo answer was ignored');
+  await assertVisible(review.nth(0).getByText('“Unicorn Tears”'), 'the pasted list is still shown');
+  await page.getByRole('button', { name: 'Cancel' }).click();
   await page.unroute('**/api/ingest');
   await shot('2b-import');
 
@@ -360,17 +447,25 @@ async function run(label, viewport) {
   );
   const status = Object.fromEntries(statuses);
   assert.equal(statuses.length, 9, 'every example line becomes a row');
-  assert.equal(status['Citadel Mephiston Red'], 'You own it');
-  assert.equal(status['Citadel Rhinox Hide'], 'You own it');
+  assert.equal(status['Citadel Mephiston Red'], 'You own this product');
+  assert.equal(status['Citadel Rhinox Hide'], 'You own this product');
   assert.equal(status['Citadel Nuln Oil'], 'Not in your stash', 'a wash is not replaced by an opaque paint');
   assert.equal(status['Citadel Retributor Armour'], 'Not in your stash', 'a metallic is not replaced by a matte paint');
   assert.ok(
-    ['Exact match', 'Close substitute', 'Mix from your stash', 'Nearest you own'].includes(status['Vallejo Black']),
+    ['Very close colour', 'Close substitute', 'Mix from your stash', 'Nearest you own'].includes(status['Vallejo Black']),
     `another brand's black is covered from the stash, got ${status['Vallejo Black']}`,
   );
   const shopping = await page.locator('.shopping-list li').allTextContents();
-  assert.ok(shopping.includes('Citadel Nuln Oil') && shopping.includes('Citadel Retributor Armour'), 'true gaps are on the shopping list');
-  assert.ok(!shopping.includes('Citadel Mephiston Red'), 'owned items are not on the shopping list');
+  const listed = (name) => shopping.some((line) => line.startsWith(name));
+  assert.ok(listed('Citadel Nuln Oil (Shade') && listed('Citadel Retributor Armour'), `true gaps are on the shopping list, with their range: ${shopping}`);
+  assert.ok(!listed('Citadel Mephiston Red'), 'owned items are not on the shopping list');
+
+  // An ambiguous line is neither covered nor bought until the user chooses.
+  await page.getByLabel('Supply list').fill('Ivory\nNuln Oil');
+  await assertVisible(page.getByText('1 to choose'), 'an ambiguous recipe line is counted as unresolved');
+  await page.locator('.recipe-table select').first().selectOption({ label: 'Vallejo Ivory · Model Color' });
+  await assertGone(page.getByText('1 to choose'), 'choosing resolves the line');
+  await page.getByRole('button', { name: 'Use an example' }).click();
   await assertVisible(page.getByRole('button', { name: 'Copy list' }), 'the shopping list can be copied');
   await shot('6-recipe');
 
@@ -422,6 +517,33 @@ async function run(label, viewport) {
   await page.getByRole('heading', { name: 'Main colours in this photo' }).waitFor();
   await context.setOffline(false);
 
+  // -- keyboard route to a first pin, and pins on transparent pixels ------------
+  await page.locator('.workspace input[type=file]').setInputFiles({
+    name: 'half-transparent.png',
+    mimeType: 'image/png',
+    buffer: halfTransparentPng(),
+  });
+  await page.locator('.stage-canvas').waitFor();
+  await assertGone(page.locator('.pin'), 'a new photo starts without pins');
+  await page.getByRole('button', { name: 'Add a pin in the middle' }).click();
+  await page.locator('.pin').first().waitFor();
+  assert.ok(
+    await page.evaluate(() => document.activeElement?.classList.contains('pin')),
+    'the new pin has keyboard focus so the arrow keys move it',
+  );
+  await page.keyboard.press('Shift+ArrowRight');
+  await assertVisible(page.getByRole('button', { name: 'Use pin 1 as the neutral point' }), 'a pin can set the neutral point without a pointer');
+  await clickImage(page, 5, 24); // transparent half
+  await assertVisible(page.getByText('Nothing to measure here'), 'a pin on transparent pixels explains itself');
+  assert.equal(await page.locator('.pin').count(), 2, 'the app keeps working with an unsampleable pin');
+  await assertVisible(page.getByRole('button', { name: 'Remove pin 2' }), 'the unsampleable pin can be removed');
+  // Dragging a good pin onto transparency must not break anything either.
+  await page.locator('.pin').first().focus();
+  for (let step = 0; step < 6; step++) await page.keyboard.press('Shift+ArrowLeft');
+  assert.equal(await page.getByText('Nothing to measure here').count(), 2, 'both pins now report the transparent area');
+  await page.getByRole('button', { name: 'Remove pin 2' }).click();
+  assert.equal(await page.locator('.pin').count(), 1, 'removing an unsampleable pin works');
+
   // Nothing may overflow sideways at this width.
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(overflow <= 1, `no horizontal page scroll (overflow ${overflow}px)`);
@@ -455,6 +577,8 @@ let renderedPdf = false;
 try {
   await run('phone', { width: 390, height: 844 });
   await run('desktop', { width: 1280, height: 900 });
+  // In CI a skipped check must fail, not pass quietly.
+  if (!renderedPdf && process.env.CI) throw new Error('PDF rendering check skipped: install poppler-utils (pdfinfo, pdftoppm).');
   console.log(`End-to-end test passed.${renderedPdf ? '' : ' (PDF rendering check skipped: poppler is not installed.)'}`);
 } catch (error) {
   // A picture of the page at the moment of failure is usually the fastest diagnosis.

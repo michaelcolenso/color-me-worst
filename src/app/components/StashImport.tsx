@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 
-import { createRecipeResolver } from '../../lib/catalog/recipeParser';
+import { createRecipeResolver, isConfident } from '../../lib/catalog/recipeParser';
 import type { CatalogItem } from '../../lib/color/types';
 import { decodeImage } from '../../lib/image/canvasIo';
 import { useStore } from '../store';
@@ -12,8 +12,29 @@ interface ReviewRow {
   label: string;
   /** Best match first. Empty when nothing matched. */
   candidates: CatalogItem[];
+  /**
+   * The product to add. Null until the user picks one whenever the reading
+   * is not certain: several candidates, or evidence that contradicts the
+   * best guess. Nothing uncertain is ever added by default.
+   */
   chosenId: string | null;
   selected: boolean;
+  /** True when the reading was not certain: the product selector stays offered even after a choice. */
+  uncertain: boolean;
+  /** Why the best guess needs checking, e.g. a code and a name that disagree. */
+  issue?: string;
+  /** Why nothing matched, when known. */
+  reason?: string;
+}
+
+/** What a reader (local or server) found for one entry. */
+interface Found {
+  label: string;
+  candidates: CatalogItem[];
+  /** True only when exactly one product fits and nothing contradicts it. */
+  confident: boolean;
+  issue?: string;
+  reason?: string;
 }
 
 /** Shape of the server's reply; mirrors `IngestResponse` in worker/ingest.ts. */
@@ -21,7 +42,12 @@ interface ServerEntry {
   label: string;
   match: { id: string } | null;
   alternatives: Array<{ id: string }>;
+  issue?: string;
+  reason?: string;
 }
+
+/** Give up on a photo request after this long; the server's own model timeout is shorter. */
+const PHOTO_TIMEOUT_MS = 100_000;
 
 type Notice = { kind: 'info' | 'error'; text: string };
 
@@ -53,6 +79,13 @@ export function StashImport() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /**
+   * Increases with every new read or cancel. A photo request that finishes
+   * after the user has moved on (pasted a list, cancelled, started another
+   * photo) compares against it and is ignored.
+   */
+  const requestSeq = useRef(0);
+  const pending = useRef<AbortController | null>(null);
 
   const resolver = useMemo(
     () => createRecipeResolver(store.queryCatalog({ limit: Number.MAX_SAFE_INTEGER }).rows.map((row) => row.item)),
@@ -60,60 +93,91 @@ export function StashImport() {
     [store, version],
   );
 
-  const present = (found: Array<{ label: string; candidates: CatalogItem[] }>, emptyMessage: string) => {
+  const present = (found: Found[], emptyMessage: string) => {
     // The same item named twice is one thing to own, so repeats are merged.
     // An entry that could be several items is NOT merged by its first guess:
     // "Monument Ivory" then plain "Ivory" may well be two different paints,
     // and the second must stay on screen for the user to choose.
     const seen = new Set<string>();
     const next: ReviewRow[] = [];
-    found.forEach(({ label, candidates }, index) => {
+    found.forEach(({ label, candidates, confident, issue, reason }, index) => {
       const first = candidates[0];
-      const identity =
-        first !== undefined && candidates.length === 1 ? `item:${first.id}` : `text:${label.trim().toLowerCase()}`;
+      const certain = confident && first !== undefined && candidates.length === 1;
+      const identity = certain ? `item:${first.id}` : `text:${label.trim().toLowerCase()}`;
       if (seen.has(identity)) return;
       seen.add(identity);
       next.push({
         key: `${index}:${identity}`,
         label,
         candidates,
-        chosenId: first?.id ?? null,
-        selected: first !== undefined && !store.isOwned(first.id),
+        chosenId: certain ? first.id : null,
+        selected: certain && !store.isOwned(first.id),
+        uncertain: !certain,
+        ...(issue !== undefined ? { issue } : {}),
+        ...(reason !== undefined ? { reason } : {}),
       });
     });
     setRows(next);
     setNotice(next.length === 0 ? { kind: 'info', text: emptyMessage } : null);
   };
 
+  /** Abandon any photo request in flight; its result will be ignored. */
+  const supersede = () => {
+    requestSeq.current += 1;
+    pending.current?.abort();
+    pending.current = null;
+    setBusy(null);
+  };
+
   const readList = () => {
+    supersede();
     const found = resolver
       .resolve(text)
       .filter((line) => line.kind !== 'color')
-      .map((line) => ({
-        label: line.raw,
-        candidates: line.kind === 'item' ? [line.item, ...line.alternatives] : [],
-      }));
+      .map(
+        (line): Found => ({
+          label: line.raw,
+          candidates: line.kind === 'item' ? [line.item, ...line.alternatives] : [],
+          confident: isConfident(line),
+          ...(line.kind === 'item' && line.issue !== undefined ? { issue: line.issue } : {}),
+          ...(line.kind === 'unknown' && line.reason !== undefined ? { reason: line.reason } : {}),
+        }),
+      );
     present(found, 'Nothing to read. Type or paste one item per line.');
   };
 
   const readPhoto = async (file: File | undefined) => {
     if (!file) return;
+    supersede();
+    const seq = requestSeq.current;
+    const controller = new AbortController();
+    pending.current = controller;
+    const timer = setTimeout(() => controller.abort(), PHOTO_TIMEOUT_MS);
+    const current = () => seq === requestSeq.current;
     setBusy('Reading labels…');
     setNotice(null);
     try {
       const data = await photoToBase64Jpeg(file);
+      if (!current()) return;
       const response = await fetch('/api/ingest', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ image: { mediaType: 'image/jpeg', data } }),
+        signal: controller.signal,
       });
+      if (!current()) return;
       const isJson = (response.headers.get('content-type') ?? '').includes('application/json');
       if (!isJson) {
         // A static host answers unknown paths with the app page, not with JSON.
         setNotice({ kind: 'error', text: 'Photo import isn’t switched on for this site yet. Paste a list instead.' });
         return;
       }
-      const body = (await response.json()) as { entries?: ServerEntry[]; error?: { code: string; message: string } };
+      const body = (await response.json()) as {
+        entries?: ServerEntry[];
+        catalogRevision?: number;
+        error?: { code: string; message: string };
+      };
+      if (!current()) return;
       if (!response.ok || !body.entries) {
         setNotice({
           kind: 'error',
@@ -125,22 +189,41 @@ export function StashImport() {
         return;
       }
       // The server names items by id; only ids this device's catalogue knows are used.
-      const found = body.entries.map((entry) => ({
-        label: entry.label,
-        candidates: [entry.match, ...entry.alternatives]
+      const found = body.entries.map((entry): Found => {
+        const candidates = [entry.match, ...entry.alternatives]
           .map((ref) => (ref ? store.getItem(ref.id) : undefined))
-          .filter((item): item is CatalogItem => item !== undefined),
-      }));
+          .filter((item): item is CatalogItem => item !== undefined);
+        return {
+          label: entry.label,
+          candidates,
+          confident: entry.match !== null && entry.alternatives.length === 0 && entry.issue === undefined,
+          ...(entry.issue !== undefined ? { issue: entry.issue } : {}),
+          ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
+        };
+      });
       present(found, 'No labels could be read in that photo. Try a closer, sharper shot, or paste a list.');
+      if (body.catalogRevision !== undefined && body.catalogRevision !== store.catalogRevision) {
+        setNotice({
+          kind: 'info',
+          text: 'The server’s catalogue is a different version from this device’s. Reload the app if some items are missing.',
+        });
+      }
     } catch {
+      if (!current()) return;
       setNotice({
         kind: 'error',
-        text: navigator.onLine
-          ? 'The photo couldn’t be read. Try again, or paste a list.'
-          : 'You’re offline. Photo import needs a connection; pasting a list works offline.',
+        text: controller.signal.aborted
+          ? 'Reading the photo took too long. Try again, or paste a list.'
+          : navigator.onLine
+            ? 'The photo couldn’t be read. Try again, or paste a list.'
+            : 'You’re offline. Photo import needs a connection; pasting a list works offline.',
       });
     } finally {
-      setBusy(null);
+      clearTimeout(timer);
+      if (current()) {
+        pending.current = null;
+        setBusy(null);
+      }
     }
   };
 
@@ -151,6 +234,7 @@ export function StashImport() {
   /** Distinct ids: two rows may end up pointing at the same item once the user has chosen. */
   const chosenIds = [...new Set(chosen.map((row) => row.chosenId as string))];
   const unmatched = (rows ?? []).filter((row) => row.candidates.length === 0);
+  const unresolved = (rows ?? []).filter((row) => row.candidates.length > 0 && row.chosenId === null);
 
   const addChosen = async () => {
     try {
@@ -197,12 +281,16 @@ export function StashImport() {
         </div>
         <p className="muted small">
           A pasted list is matched on this device. A photo is different: it is sent to this app’s server and on to
-          Anthropic’s Claude model to read the labels. This app does not keep the photo.
+          Anthropic’s Claude model to read the labels, under Anthropic’s API terms. This app does not store the photo
+          or log what is read from it.
         </p>
 
         {busy && (
           <p className="notice info" role="status">
-            {busy}
+            {busy}{' '}
+            <button type="button" className="button small" onClick={supersede}>
+              Cancel
+            </button>
           </p>
         )}
         {notice && (
@@ -218,15 +306,24 @@ export function StashImport() {
               {rows.map((row) => {
                 const item = row.candidates.find((candidate) => candidate.id === row.chosenId);
                 const alreadyOwned = item !== undefined && store.isOwned(item.id);
+                // Offered whenever the reading was uncertain, even with one candidate left:
+                // a newer server catalogue can name products this device does not know.
+                const needsChoice = row.candidates.length > 0 && row.uncertain;
                 return (
-                  <li key={row.key} className={item ? undefined : 'unmatched'}>
+                  <li key={row.key} className={item ? undefined : row.candidates.length > 0 ? 'unresolved' : 'unmatched'}>
                     <input
                       type="checkbox"
                       className="import-check"
                       checked={row.selected}
                       disabled={item === undefined || alreadyOwned}
                       onChange={(event) => update(row.key, { selected: event.target.checked })}
-                      aria-label={item ? `Add ${item.brand} ${item.name}` : `No match for ${row.label}`}
+                      aria-label={
+                        item
+                          ? `Add ${item.brand} ${item.name}`
+                          : row.candidates.length > 0
+                            ? `Choose a product for ${row.label} first`
+                            : `No match for ${row.label}`
+                      }
                     />
                     {item && <SplitSwatch target={item.color} size="small" />}
                     <div className="stash-item-text">
@@ -238,30 +335,40 @@ export function StashImport() {
                           <span className="item-meta">
                             {item.line} · read as “{row.label}”{alreadyOwned && <span className="tag">Already owned</span>}
                           </span>
-                          {row.candidates.length > 1 && (
-                            <label className="field inline choose">
-                              <span>Could be:</span>
-                              <select
-                                value={row.chosenId ?? ''}
-                                onChange={(event) => {
-                                  const id = event.target.value;
-                                  update(row.key, { chosenId: id, selected: !store.isOwned(id) });
-                                }}
-                              >
-                                {row.candidates.map((candidate) => (
-                                  <option key={candidate.id} value={candidate.id}>
-                                    {candidate.brand} {candidate.name} · {candidate.line}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                          )}
+                        </>
+                      ) : row.candidates.length > 0 ? (
+                        <>
+                          <strong>“{row.label}”</strong>
+                          <span className="item-meta">Not certain which product this is. Choose one, or leave it out.</span>
                         </>
                       ) : (
                         <>
                           <strong>“{row.label}”</strong>
-                          <span className="item-meta">Not in the catalogue. Check the spelling or add the brand.</span>
+                          <span className="item-meta">
+                            {row.reason ?? 'Not in the catalogue. Check the spelling or add the brand.'}
+                          </span>
                         </>
+                      )}
+                      {row.issue !== undefined && <span className="warning small">{row.issue}</span>}
+                      {needsChoice && (
+                        <label className="field inline choose">
+                          <span>Which product?</span>
+                          <select
+                            value={row.chosenId ?? ''}
+                            onChange={(event) => {
+                              const id = event.target.value;
+                              update(row.key, id === '' ? { chosenId: null, selected: false } : { chosenId: id, selected: !store.isOwned(id) });
+                            }}
+                          >
+                            <option value="">Choose a product…</option>
+                            {row.candidates.map((candidate) => (
+                              <option key={candidate.id} value={candidate.id}>
+                                {candidate.brand} {candidate.name} · {candidate.line}
+                                {/\d/.test(candidate.sku) ? ` · ${candidate.sku}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
                       )}
                     </div>
                   </li>
@@ -272,9 +379,17 @@ export function StashImport() {
               <button type="button" className="button primary" onClick={() => void addChosen()} disabled={chosenIds.length === 0}>
                 Add {chosenIds.length} to my stash
               </button>
-              <button type="button" className="button" onClick={() => setRows(null)}>
+              <button
+                type="button"
+                className="button"
+                onClick={() => {
+                  supersede();
+                  setRows(null);
+                }}
+              >
                 Cancel
               </button>
+              {unresolved.length > 0 && <span className="muted small">{unresolved.length} to choose</span>}
               {unmatched.length > 0 && <span className="muted small">{unmatched.length} not recognised</span>}
             </div>
           </div>

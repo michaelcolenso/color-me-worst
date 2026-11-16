@@ -652,6 +652,7 @@ export function findBestTwoPartMixes(
     if (itemA.opacity < LOW_OPACITY_THRESHOLD || itemB.opacity < LOW_OPACITY_THRESHOLD) warnings.push('low_opacity');
     if (finishClassOf(itemA.finish) !== finishClassOf(itemB.finish)) warnings.push('experimental_finish');
     if (!isXyzInSrgbGamut(mixXyz)) warnings.push('display_clipped');
+    if (finishClassOf(itemA.finish) !== 'solid' || finishClassOf(itemB.finish) !== 'solid') warnings.push('effect_finish');
     return {
       itemA,
       itemB,

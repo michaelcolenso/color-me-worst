@@ -1,5 +1,6 @@
 {
   "description": "Curated seed sample. Hex, name and code come from the cited community datasets and are unverified against physical product. Finish, opacity and medium were assigned by hand in scripts/buildSeedSource.py.",
+  "revision": 1,
   "items": [
     {
       "brand": "Citadel",

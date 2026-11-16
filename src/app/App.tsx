@@ -1,5 +1,7 @@
 import { useState } from 'react';
 
+import { downloadBlob } from '../lib/export/recipeCard';
+
 import type { MatchMode } from '../lib/color/matchSolver';
 import { useStore } from './store';
 import { RecipeView } from './views/RecipeView';
@@ -13,6 +15,48 @@ const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'recipe', label: 'Recipe' },
   { id: 'stash', label: 'Stash' },
 ];
+
+/**
+ * Shown on every tab while some stash changes exist only in memory because a
+ * write to this device's storage failed. Matches already use those changes;
+ * a reload would lose them.
+ */
+function SaveProblem() {
+  const { store } = useStore();
+  const [retrying, setRetrying] = useState(false);
+  const [failedAgain, setFailedAgain] = useState(false);
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      await store.retryPersistence();
+      setFailedAgain(false);
+    } catch {
+      setFailedAgain(true);
+    } finally {
+      setRetrying(false);
+    }
+  };
+  const backup = () =>
+    downloadBlob(
+      new Blob([JSON.stringify(store.exportBackup(), null, 1)], { type: 'application/json' }),
+      `stash-backup-${new Date().toISOString().slice(0, 10)}.json`,
+    );
+  return (
+    <div className="notice error banner save-status" role="alert">
+      <span>
+        Some stash changes aren’t saved on this device yet{store.persistenceError ? ` (${store.persistenceError})` : ''}.
+        Matches already use them, but reloading now would lose them.
+        {failedAgain && ' Saving failed again: free up space, or download a backup.'}
+      </span>
+      <button type="button" className="button small" onClick={() => void retry()} disabled={retrying}>
+        {retrying ? 'Saving…' : 'Try saving again'}
+      </button>
+      <button type="button" className="button small" onClick={backup}>
+        Download a backup
+      </button>
+    </div>
+  );
+}
 
 export function App() {
   const { store, persistent } = useStore();
@@ -38,6 +82,7 @@ export function App() {
           This browser is blocking storage (private browsing?), so your stash will be forgotten when you close this tab.
         </p>
       )}
+      {store.hasUnpersistedChanges && <SaveProblem />}
       {store.ownedCount === 0 && tab !== 'stash' && (
         <p className="notice info banner">
           Your stash is empty, so every colour will show as missing.{' '}

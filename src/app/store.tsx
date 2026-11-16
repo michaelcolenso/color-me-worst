@@ -10,9 +10,13 @@ interface StoreState {
   store: StashStore;
   /** False when IndexedDB is unavailable and the stash lives only in memory. */
   persistent: boolean;
+  channel?: BroadcastChannel;
 }
 
 const StoreContext = createContext<StoreState | null>(null);
+
+/** Tabs of this app on one device tell each other about stash writes on this channel. */
+const SYNC_CHANNEL = 'color-me-worst:stash';
 
 async function openStore(): Promise<StoreState> {
   let persistent = true;
@@ -24,9 +28,32 @@ async function openStore(): Promise<StoreState> {
     persistent = false;
     adapter = createMemoryAdapter();
   }
-  const store = await StashStore.open(adapter);
+  // Other open tabs hold their own copy of the stash in memory. After each
+  // successful write, tell them to re-read it from IndexedDB.
+  const channel = persistent && typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(SYNC_CHANNEL) : null;
+  const store = await StashStore.open(adapter, {
+    ...(channel ? { onPersisted: (itemIds: string[]) => channel.postMessage({ itemIds }) } : {}),
+  });
   if (store.catalogRevision < seed.revision) await store.importCatalog(seed.items, seed.revision);
-  return { store, persistent };
+  if (channel) {
+    channel.onmessage = () => void store.refreshFromStorage().catch(() => undefined);
+  }
+  return { store, persistent, ...(channel ? { channel } : {}) };
+}
+
+/**
+ * Re-read the stash when the tab becomes visible again: a fallback for
+ * browsers without BroadcastChannel and for messages missed while asleep.
+ */
+function useRefreshOnVisible(state: StoreState | null) {
+  useEffect(() => {
+    if (state === null || !state.persistent) return;
+    const refresh = () => {
+      if (document.visibilityState === 'visible') void state.store.refreshFromStorage().catch(() => undefined);
+    };
+    document.addEventListener('visibilitychange', refresh);
+    return () => document.removeEventListener('visibilitychange', refresh);
+  }, [state]);
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -38,8 +65,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let opened: StoreState | undefined;
     openStore().then(
       (result) => {
-        if (cancelled) result.store.close();
-        else {
+        if (cancelled) {
+          result.channel?.close();
+          result.store.close();
+        } else {
           opened = result;
           setState(result);
         }
@@ -50,9 +79,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     );
     return () => {
       cancelled = true;
+      opened?.channel?.close();
       opened?.store.close();
     };
   }, []);
+  useRefreshOnVisible(state);
 
   if (error !== null) {
     return (

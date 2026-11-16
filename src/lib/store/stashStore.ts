@@ -49,6 +49,16 @@ export interface StashEntry {
 /** A stash entry as exchanged with a server: everything except the local `dirty` flag. */
 export type RemoteStashEntry = Omit<StashEntry, 'dirty'>;
 
+const BACKUP_FORMAT = 'color-me-worst/stash-backup@1';
+
+/** A portable copy of the stash, as written by {@link StashStore.exportBackup}. */
+export interface StashBackup {
+  format: typeof BACKUP_FORMAT;
+  exportedAt: string;
+  catalogRevision: number;
+  entries: RemoteStashEntry[];
+}
+
 // ---------------------------------------------------------------------------
 // Storage adapters
 // ---------------------------------------------------------------------------
@@ -242,6 +252,11 @@ export interface StashStoreOptions {
   now?: () => number;
   /** Measured spectra and tint strengths passed through to the match solver. */
   overrides?: PigmentOverrides;
+  /**
+   * Called after stash entries were written to storage successfully. The app
+   * uses it to tell other open tabs to {@link StashStore.refreshFromStorage}.
+   */
+  onPersisted?: (itemIds: string[]) => void;
 }
 
 export interface SetOwnedOptions {
@@ -267,15 +282,19 @@ export class StashStore {
   /** Ids whose in-memory entry is newer than storage because a write failed. */
   private readonly unpersisted = new Set<string>();
 
+  /** Message of the last failed storage write, cleared once everything is saved. */
+  private lastWriteError: string | null = null;
+
   private constructor(
     private readonly adapter: StorageAdapter,
     private readonly now: () => number,
     private readonly overrides: PigmentOverrides | undefined,
+    private readonly onPersisted: ((itemIds: string[]) => void) | undefined,
   ) {}
 
   /** Open a store: loads the catalogue and stash from the adapter into memory. */
   static async open(adapter: StorageAdapter, options: StashStoreOptions = {}): Promise<StashStore> {
-    const store = new StashStore(adapter, options.now ?? Date.now, options.overrides);
+    const store = new StashStore(adapter, options.now ?? Date.now, options.overrides, options.onPersisted);
     const [catalog, revision, stash] = await Promise.all([
       adapter.loadCatalog(),
       adapter.loadCatalogRevision(),
@@ -283,6 +302,8 @@ export class StashStore {
     ]);
     for (const entry of stash) store.stash.set(entry.itemId, entry);
     store.indexCatalog(catalog, revision);
+    // Finish any rename migration a previous session could not save.
+    await store.migrateFormerIdsSafely();
     return store;
   }
 
@@ -321,6 +342,68 @@ export class StashStore {
     await this.enqueueWrite(() => this.adapter.replaceCatalog(items, revision));
     this.indexCatalog(items, revision);
     this.changed();
+    await this.migrateFormerIdsSafely();
+  }
+
+  /**
+   * Run {@link migrateFormerIds} without letting a failed save fail the
+   * caller: the catalogue is already stored, the moved entries stay in memory
+   * and are reported through {@link hasUnpersistedChanges}, and the move is
+   * redone the next time the store opens, because it is derived from the
+   * stored catalogue and stash rather than from the import itself.
+   */
+  private async migrateFormerIdsSafely(): Promise<void> {
+    try {
+      await this.migrateFormerIds(this.catalog);
+    } catch {
+      // Reported through hasUnpersistedChanges / persistenceError.
+    }
+  }
+
+  /**
+   * Move stash entries recorded under an item's former id (before a rename or
+   * a corrected code) onto its current id, so a catalogue update never makes
+   * an owned item silently disappear from matching.
+   *
+   * Last-write-wins, like every other merge here, using the time of the edit
+   * being moved rather than the time the move happened. The newest entry
+   * across the former ids, a removal included, replaces the current entry
+   * only if it is strictly newer. A live former-id entry is then retired with
+   * a tombstone carrying the SAME time as the edit that was moved: it can
+   * therefore never outrank the current entry it was moved into, while a
+   * genuinely later edit or removal under a former id (from a device or
+   * backup with the older catalogue) still wins and is moved in turn.
+   */
+  private async migrateFormerIds(items: readonly CatalogItem[]): Promise<void> {
+    const changed: StashEntry[] = [];
+    for (const item of items) {
+      let newest: StashEntry | undefined;
+      for (const former of item.formerIds ?? []) {
+        const old = this.stash.get(former);
+        if (old === undefined) continue;
+        if (newest === undefined || old.updatedAt > newest.updatedAt) newest = old;
+        if (!old.deleted) changed.push({ ...old, deleted: true, dirty: true });
+      }
+      if (newest === undefined) continue;
+      const current = this.stash.get(item.id);
+      if (current !== undefined && current.updatedAt >= newest.updatedAt) continue;
+      if (newest.deleted) {
+        // A removal under a former id: remove the current item too, if it is there.
+        if (current !== undefined && !current.deleted) {
+          changed.push({ ...current, updatedAt: newest.updatedAt, deleted: true, dirty: true });
+        }
+        continue;
+      }
+      changed.push({
+        itemId: item.id,
+        quantity: newest.quantity,
+        ...(newest.note !== undefined ? { note: newest.note } : {}),
+        updatedAt: newest.updatedAt,
+        deleted: false,
+        dirty: true,
+      });
+    }
+    await this.commit(changed);
   }
 
   getItem(id: string): CatalogItem | undefined {
@@ -425,6 +508,23 @@ export class StashStore {
     return ids;
   }
 
+  /** True when the user owns the item and has some of it (quantity above zero). */
+  isAvailable(itemId: string): boolean {
+    const entry = this.stash.get(itemId);
+    return entry !== undefined && !entry.deleted && entry.quantity > 0;
+  }
+
+  /**
+   * Ids of items the user owns and has some of: tracked, not removed, and
+   * quantity above zero. Only these may satisfy a match or supply a mix; an
+   * item at quantity zero stays on the list as something to restock.
+   */
+  availableIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const entry of this.stash.values()) if (!entry.deleted && entry.quantity > 0) ids.add(entry.itemId);
+    return ids;
+  }
+
   /** Number of items the user currently owns. */
   get ownedCount(): number {
     let count = 0;
@@ -509,6 +609,66 @@ export class StashStore {
    * @returns how many local entries changed.
    */
   async applyRemote(remote: readonly RemoteStashEntry[]): Promise<number> {
+    const changed = await this.merge(remote, false);
+    // Another device may still be on a catalogue from before a rename.
+    await this.migrateFormerIdsSafely();
+    return changed;
+  }
+
+  // -- backup ---------------------------------------------------------------
+
+  /** Everything needed to restore this stash on another browser or after clearing data. */
+  exportBackup(): StashBackup {
+    return {
+      format: BACKUP_FORMAT,
+      exportedAt: new Date(this.now()).toISOString(),
+      catalogRevision: this.catalogRevisionValue,
+      entries: [...this.stash.values()].map(({ dirty: _dirty, ...entry }) => entry),
+    };
+  }
+
+  /**
+   * Merge a backup made by {@link exportBackup}. Per item the newer version
+   * wins, so restoring an old backup never undoes later edits. Restored
+   * entries are marked for sync.
+   * @throws {Error} when the data is not a backup in a known format.
+   * @returns how many entries changed.
+   */
+  async restoreBackup(data: unknown): Promise<number> {
+    const backup = data as Partial<StashBackup> | null;
+    if (backup === null || typeof backup !== 'object' || backup.format !== BACKUP_FORMAT || !Array.isArray(backup.entries)) {
+      throw new Error('This file is not a Color Me Worst stash backup.');
+    }
+    const entries: RemoteStashEntry[] = [];
+    for (const raw of backup.entries as unknown[]) {
+      const entry = raw as Partial<RemoteStashEntry>;
+      if (
+        typeof entry.itemId !== 'string' ||
+        typeof entry.quantity !== 'number' ||
+        !Number.isInteger(entry.quantity) ||
+        entry.quantity < 0 ||
+        typeof entry.updatedAt !== 'number' ||
+        !Number.isFinite(entry.updatedAt) ||
+        typeof entry.deleted !== 'boolean' ||
+        (entry.note !== undefined && typeof entry.note !== 'string')
+      ) {
+        throw new Error('The backup file is damaged: an entry is malformed.');
+      }
+      entries.push({
+        itemId: entry.itemId,
+        quantity: entry.quantity,
+        updatedAt: entry.updatedAt,
+        deleted: entry.deleted,
+        ...(entry.note !== undefined ? { note: entry.note } : {}),
+      });
+    }
+    const changed = await this.merge(entries, true);
+    // A backup made before a rename names the old id.
+    await this.migrateFormerIdsSafely();
+    return changed;
+  }
+
+  private async merge(remote: readonly RemoteStashEntry[], dirty: boolean): Promise<number> {
     // Keyed by item so a batch holding several versions of one item resolves
     // to the newest of them, whatever order they arrive in.
     const accepted = new Map<string, StashEntry>();
@@ -526,7 +686,7 @@ export class StashStore {
       ) {
         continue;
       }
-      accepted.set(incoming.itemId, { ...incoming, dirty: false });
+      accepted.set(incoming.itemId, { ...incoming, dirty });
     }
     await this.commit([...accepted.values()]);
     return accepted.size;
@@ -544,10 +704,46 @@ export class StashStore {
     return this.unpersisted.size > 0;
   }
 
+  /** Why the last storage write failed, while {@link hasUnpersistedChanges} is true. */
+  get persistenceError(): string | null {
+    return this.unpersisted.size > 0 ? this.lastWriteError : null;
+  }
+
   /** Try again to write changes left over from a failed storage write. */
   async retryPersistence(): Promise<void> {
     if (this.unpersisted.size === 0) return;
     await this.enqueueWrite(() => this.persist([]));
+  }
+
+  /**
+   * Re-read the stash from storage and adopt entries that are newer there,
+   * e.g. written by another tab. Entries changed here but not yet saved are
+   * kept. Per item the newer timestamp wins, as with {@link applyRemote}.
+   * @returns how many entries changed.
+   */
+  async refreshFromStorage(): Promise<number> {
+    let adopted = 0;
+    // Queued behind pending writes, so it reads what this tab has saved.
+    await this.enqueueWrite(async () => {
+      const stored = await this.adapter.loadStash();
+      for (const entry of stored) {
+        if (this.unpersisted.has(entry.itemId)) continue;
+        const local = this.stash.get(entry.itemId);
+        if (local !== undefined && local.updatedAt >= entry.updatedAt) continue;
+        this.stash.set(entry.itemId, { ...entry });
+        const index = this.indexById.get(entry.itemId);
+        if (index !== undefined) this.ownedFlags[index] = entry.deleted ? 0 : 1;
+        adopted += 1;
+      }
+    });
+    if (adopted > 0) {
+      this.solver = undefined;
+      this.changed();
+      // A tab still on an older catalogue writes under former ids. Run after
+      // the queued read, never inside it: the migration queues writes of its own.
+      await this.migrateFormerIdsSafely();
+    }
+    return adopted;
   }
 
   // -- matching -------------------------------------------------------------
@@ -559,7 +755,7 @@ export class StashStore {
   getSolver(): MatchSolver {
     this.solver ??= createMatchSolver({
       catalog: this.catalog,
-      ownedIds: this.ownedIds(),
+      ownedIds: this.availableIds(),
       ...(this.overrides !== undefined ? { overrides: this.overrides } : {}),
     });
     return this.solver;
@@ -645,13 +841,28 @@ export class StashStore {
       const entry = this.stash.get(id);
       if (entry !== undefined) batch.push(entry);
     }
+    const hadUnsaved = this.unpersisted.size > 0;
     try {
       await this.adapter.putStash(batch);
     } catch (error) {
       for (const id of itemIds) this.unpersisted.add(id);
+      this.lastWriteError = error instanceof Error ? error.message : String(error);
+      // Tell subscribers the save state changed, so the app can show it.
+      if (!hadUnsaved) this.changed();
       throw error;
     }
     for (const id of ids) this.unpersisted.delete(id);
+    if (hadUnsaved && this.unpersisted.size === 0) {
+      this.lastWriteError = null;
+      this.changed();
+    }
+    if (batch.length > 0) {
+      try {
+        this.onPersisted?.(batch.map((entry) => entry.itemId));
+      } catch {
+        // A notification failure must not turn a successful write into a failed one.
+      }
+    }
   }
 
   /** Apply entries to memory, queue the write, notify, then wait for the write. */

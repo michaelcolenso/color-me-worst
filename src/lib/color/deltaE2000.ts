@@ -157,8 +157,10 @@ export function deltaE2000Components(
   termHue = dHp / (kH * SH);
   termRotation = RT * termChroma * termHue;
   const sumOfSquares = termLightness * termLightness + termChroma * termChroma + termHue * termHue + termRotation;
-  // The form is non-negative in exact arithmetic; guard against −1e-17 round-off.
-  return sumOfSquares > 0 ? Math.sqrt(sumOfSquares) : 0;
+  // The form is non-negative in exact arithmetic; clamp −1e-17 round-off to 0.
+  // NaN must stay NaN: `NaN > 0` is false, so a plain ternary would report
+  // invalid input as a perfect match.
+  return Math.sqrt(Math.max(0, sumOfSquares));
 }
 
 /**

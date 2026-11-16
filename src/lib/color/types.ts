@@ -68,6 +68,12 @@ export interface CatalogItem {
   discontinued: boolean;
   /** Extension. Absent means unknown; treat as `community`. */
   colorSource?: ColorSource;
+  /**
+   * Extension. Ids this item was published under before (after a rename or a
+   * corrected code). Stash entries recorded against a former id are moved to
+   * this item when the catalogue is imported.
+   */
+  formerIds?: string[];
 }
 
 export interface SingleMatch {
@@ -83,7 +89,13 @@ export type MixWarning =
   /** The pair is only allowed because "Experimental Finishes" is switched on. */
   | 'experimental_finish'
   /** The predicted colour lies outside sRGB; hex and rgb are the nearest displayable colour. */
-  | 'display_clipped';
+  | 'display_clipped'
+  /**
+   * A component is not a solid paint (metallic, fluorescent, wash or contrast).
+   * The mixing model describes opaque pigment films only, so the prediction is
+   * a colour estimate, not a prediction of how the effect will look.
+   */
+  | 'effect_finish';
 
 export interface TwoPartMix {
   itemA: CatalogItem;

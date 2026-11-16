@@ -15,7 +15,49 @@ The project is built in gated phases. Each phase stops for sign-off.
 | 2 | Catalogue schema, seed data, local-first store | Done |
 | 3 | Image normalisation and palette extraction | Done |
 | 4 | Interactive UI and "Shop Your Stash" solver | Done |
-| 5 | Vision-assisted onboarding and export | **Done, awaiting sign-off; not deployed** |
+| 5 | Vision-assisted onboarding and export | Done; not deployed |
+| — | Fixes from two independent reviews (November 2026) | Done; see below |
+
+Nothing has been deployed. The physical accuracy of the catalogue colours and
+of mix predictions has not been validated against real paint or thread.
+
+## Review fixes (November 2026)
+
+Two independent reviews were combined; every code finding was reproduced
+before it was fixed, and each fix has a test that fails without it.
+
+| Finding | What changed |
+| --- | --- |
+| Catalogue corrections never reached existing users (revision stuck at 1) | `revision` now lives in `data/catalog/seed-source.json`. `npm run seed:generate` refuses to regenerate changed content at an unchanged revision, and a test enforces the same through `data/catalog/catalog.lock.json`. Items can list `formerIds`; stash entries move to the new id on import, so a rename keeps ownership. The API echoes `catalogRevision`. |
+| A pin on transparent pixels crashed the app | Each pin is sampled separately; an unsampleable pin says so and stays movable/removable. A last-resort error screen replaces a blank page. |
+| Contradictory labels resolved confidently ("Vallejo 70.950 White" → Black; "Monument 70.950" → Vallejo) | A named brand now *restricts* candidates. If the best candidate leaves a product code or another product's colour word unexplained, the line comes back with an `issue` and alternatives instead of a match. A code that matched nothing and was retried by name is flagged too. |
+| Ambiguous imports and recipe lines defaulted to the first guess | Uncertain rows start with no product chosen and cannot be added, counted as covered, or put on the shopping list until the user chooses. |
+| Offline cache could store a server error as the app, cached `/api/*`, and deleted other apps' caches | Only successful HTML replaces the offline shell; `/api/` is never intercepted; `no-store` is respected; only this app's old caches are deleted; a new version waits for open tabs to close instead of taking over mid-session; the cache version hashes file contents, including `index.html` and `public/`. |
+| Metallic/fluorescent/wash mixes were offered as ordinary mixes | Mixes are searched only for solid (matte/satin/gloss) colours from solid paints. With experimental finishes on, an effect mix is shown with an `effect_finish` warning and never counts as covering the target. Mix warnings are now printed on the recipe card. |
+| Wording overstated certainty | "Exact match" → "Very close colour"; "under 1.5 is not visible" removed; "You own this product" is reserved for identity; each product shows its colour source ("community colour data, unverified"); the recipe view says substitutes are judged on unverified data. |
+| Late async results could overwrite newer work | Photo loads, automatic white balance and photo import are tied to the request that started them; superseded results are dropped. Export waits until the corrected image matches the current correction. Photo import has a Cancel button and a client-side timeout. |
+| Two open tabs disagreed about the stash | After each successful write the store notifies other tabs (BroadcastChannel), which re-read IndexedDB; tabs also refresh when they become visible. Newer edits win per item. |
+| Failed saves were invisible | A banner on every tab shows unsaved changes with "Try saving again" and "Download a backup". The Stash tab has backup download and restore (newer version of each item wins). |
+| No keyboard route to a first pin or a neutral point | "Add a pin in the middle" focuses a new pin for the arrow keys; each pin has "Use as neutral". |
+| Photo import: unbounded latency, unmeasured spend | SDK timeout 45 s per attempt with one retry (was 10 min with two); one JSON log line per call with model, token counts, outcome and duration (no image or label text). The prompt asks for at most 300 labels; the server still truncates. |
+| Request size checked only after buffering | The body is read as a stream and abandoned once it passes the byte cap, with or without `Content-Length`. Image bytes must match the declared format before anything is spent. |
+| Matching re-ran for every pin on every drag; recipe re-ran per keystroke | Pin results are cached by colour, stash version and options; recipe matching waits for a 250 ms pause in typing. |
+| `deltaE2000(NaN, …)` returned 0, a perfect match | It now returns NaN. |
+| Quantity-zero items still satisfied matches | Only items with quantity above zero are offered as matches or mix ingredients; they stay on the list. |
+| No CI | `docs/ci/github-actions-ci.yml` (move it to `.github/workflows/ci.yml` to enable it) runs unit tests (including catalogue/seed/schema checks), build, Worker bundle check, browser smoke and end-to-end tests. In CI a skipped PDF check fails. |
+
+Checked and not changed: the dependency versions flagged as "ahead of stable"
+(`typescript` 7.0.2, `vite` 8.3.8, `vitest` 5.1.0 and the rest) are each the
+current `latest` release on npm as of this change.
+
+Not done (needs a decision, data or hardware, not code): choosing a licence;
+a privacy policy for photo import; DMC dataset redistribution rights; a
+deployed staging environment; real-device, Safari/Firefox and screen-reader
+testing; real-photo and real-label evaluation; physical colour validation;
+saving open projects across reloads; paginated print export; per-paint tint
+strength in the UI; storing unknown products without a colour; a content
+security policy (to be tested against the deployed Worker); a spend budget
+in money rather than request counts.
 
 ## Phase 1: the colour kernel
 
@@ -129,7 +171,8 @@ PostgreSQL-specific features; and it keeps hosting on one platform. The schema
 is plain SQL with CHECK constraints and would port to PostgreSQL with minor
 type changes if that is ever needed.
 
-No Worker, database or other cloud resource has been created yet. The
+No Worker, database or other cloud resource has been deployed. (The Worker
+code was added in Phase 5; the D1 schema is still not wired to it.) The
 migration has been run against SQLite locally, not against a real D1 database.
 
 ### What was added
@@ -328,7 +371,9 @@ works offline after the first visit. Three tabs:
   the user to choose; a line that fits none is reported, not guessed.
 - **A poor nearest option is labelled as such.** When nothing owned is close,
   the nearest mix is still shown, but under "Nothing you own gets close".
-- **Photos never leave the device.** All image work happens in the browser.
+- **Photos in the workspace never leave the device.** All image work happens
+  in the browser. (Phase 5 later added an optional "Read a photo" stash import
+  that does upload; it says so where it is offered.)
 
 ### Verification
 
@@ -464,14 +509,15 @@ only "Read a photo" reports that it is not switched on.
 - **The label reader has never called the real model.** It typechecks against
   the installed SDK and is tested with a stand-in. How well it reads real
   racks, small labels or handwriting is unknown until it is run with a key.
-- **Not deployed.** No Worker, KV namespace or secret exists.
+- **Not deployed.** No Worker, Durable Object or secret exists on Cloudflare.
 - **Rate limits are keyed by network address**, so people behind one address
   share an allowance. There are no user accounts.
 - **Durable Objects have not been exercised on Cloudflare itself**, only in
   the local runtime. Check your plan's Durable Object allowance before relying
   on it.
-- **The catalogue ships inside the Worker**, so a catalogue change needs a
-  redeploy. The D1 schema from Phase 2 is not wired up yet.
+- **The catalogue ships inside the Worker and the app**, so a catalogue change
+  needs a redeploy (and a revision bump; see "Review fixes"). The D1 schema
+  from Phase 2 is not wired up yet.
 - **Semantic region detection** ("cloak highlights") from the specification's
   architecture section is not built; no phase lists it as a deliverable.
 - **No cross-device sync**: the local bookkeeping exists, the server half does not.

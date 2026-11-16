@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+
+import { downloadBlob } from '../../lib/export/recipeCard';
 
 import { ItemMeta } from '../components/MatchCard';
 import { SplitSwatch } from '../components/SplitSwatch';
@@ -14,6 +16,24 @@ export function StashView() {
   const [ownedOnly, setOwnedOnly] = useState(false);
   const [limit, setLimit] = useState(PAGE);
   const [error, setError] = useState<string | null>(null);
+  const [backupNote, setBackupNote] = useState<string | null>(null);
+  const restoreRef = useRef<HTMLInputElement>(null);
+
+  const downloadBackup = () => {
+    const blob = new Blob([JSON.stringify(store.exportBackup(), null, 1)], { type: 'application/json' });
+    downloadBlob(blob, `stash-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  };
+
+  const restoreBackup = async (file: File | undefined) => {
+    if (!file) return;
+    setBackupNote(null);
+    try {
+      const changed = await store.restoreBackup(JSON.parse(await file.text()) as unknown);
+      setBackupNote(changed === 0 ? 'Nothing new in that backup.' : `Restored ${changed} item${changed === 1 ? '' : 's'}.`);
+    } catch (reason) {
+      setBackupNote(reason instanceof SyntaxError ? 'That file isn’t a stash backup.' : reason instanceof Error ? reason.message : String(reason));
+    }
+  };
 
   const brands = useMemo(
     () => store.brands(),
@@ -37,7 +57,7 @@ export function StashView() {
       setError(null);
       await store.setOwned(id, owned);
     } catch {
-      setError('That change couldn’t be saved to this device. It will be retried with your next change.');
+      setError('That change couldn’t be saved to this device. Use “Try saving again” at the top of the page.');
     }
   };
 
@@ -53,6 +73,39 @@ export function StashView() {
       </p>
 
       <StashImport />
+
+      <details className="import">
+        <summary>Backup</summary>
+        <div className="import-body">
+          <p className="muted small">
+            Your stash lives only in this browser. Download a backup to keep a copy or move it to another device.
+            Restoring keeps whichever version of each item is newer.
+          </p>
+          <div className="button-row">
+            <button type="button" className="button" onClick={downloadBackup}>
+              Download backup
+            </button>
+            <button type="button" className="button" onClick={() => restoreRef.current?.click()}>
+              Restore from a backup
+            </button>
+            <input
+              ref={restoreRef}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={(event) => {
+                void restoreBackup(event.target.files?.[0]);
+                event.target.value = '';
+              }}
+            />
+          </div>
+          {backupNote && (
+            <p className="notice info" role="status">
+              {backupNote}
+            </p>
+          )}
+        </div>
+      </details>
 
       <div className="toolbar">
         <label className="field grow">

@@ -1,0 +1,58 @@
+# To enable: move this file to .github/workflows/ci.yml. (The session that wrote it
+# could not create workflow files: its GitHub token lacks the "workflow" scope.)
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Unit tests, types, build, Worker bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Includes the catalogue checks: generated seed files in step with the
+      # source, no content change without a revision bump, schema + seed applied to SQLite.
+      - run: npm test
+      - run: npm run build
+      # Bundles the Worker exactly as a deploy would, without deploying.
+      - run: npm run worker:check
+
+  browser:
+    name: Browser smoke and end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Makes scripts/e2e.mjs fail instead of skipping the PDF rendering check.
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Playwright is not a project dependency (see scripts/browserSmoke.mjs);
+      # CI installs one pinned version and its Chromium.
+      - run: npm install --no-save playwright@1.63.0
+      - run: npx playwright install --with-deps chromium
+      - run: sudo apt-get install -y poppler-utils
+      - run: npm run test:browser
+      - run: npm run test:e2e -- e2e-screenshots
+      - if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-screenshots
+          path: e2e-screenshots

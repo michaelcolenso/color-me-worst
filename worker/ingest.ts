@@ -99,6 +99,8 @@ export const DEFAULT_LIMITS: IngestLimits = { perClientPerHour: 20, perDay: 500 
 
 export interface IngestDependencies {
   catalog: readonly CatalogItem[];
+  /** Revision of `catalog`, echoed in responses. Default 0 (unknown). */
+  catalogRevision?: number;
   /** Omit to disable photo import; text import still works. */
   extract?: VisionExtractor;
   /** Required for photo import: without a counter there is no brake on cost. */
@@ -120,12 +122,22 @@ export interface IngestEntry {
   label: string;
   /** Best catalogue match, or null when nothing matched. */
   match: IngestItemRef | null;
-  /** Other items that matched equally well; the user should choose. */
+  /** Other candidates; when non-empty the user must choose. */
   alternatives: IngestItemRef[];
+  /**
+   * Present when the label contradicts `match` (e.g. a code and a name that
+   * belong to different products), or `match` was found by name after the
+   * printed code matched nothing. `match` is then only a suggestion.
+   */
+  issue?: string;
+  /** Why nothing matched, when known. */
+  reason?: string;
 }
 
 export interface IngestResponse {
   source: 'text' | 'image';
+  /** Revision of the catalogue the ids refer to; compare with the client's copy. */
+  catalogRevision: number;
   entries: IngestEntry[];
 }
 
@@ -142,8 +154,20 @@ const toRef = (item: CatalogItem): IngestItemRef => ({
 });
 
 function toEntry(label: string, resolved: ResolvedRecipeLine): IngestEntry {
-  if (resolved.kind !== 'item') return { label, match: null, alternatives: [] };
-  return { label, match: toRef(resolved.item), alternatives: resolved.alternatives.map(toRef) };
+  if (resolved.kind !== 'item') {
+    return {
+      label,
+      match: null,
+      alternatives: [],
+      ...(resolved.kind === 'unknown' && resolved.reason !== undefined ? { reason: resolved.reason } : {}),
+    };
+  }
+  return {
+    label,
+    match: toRef(resolved.item),
+    alternatives: resolved.alternatives.map(toRef),
+    ...(resolved.issue !== undefined ? { issue: resolved.issue } : {}),
+  };
 }
 
 /** Collapse whitespace, drop control characters and cap the length of model- or user-supplied text. */
@@ -173,13 +197,20 @@ export function matchLabels(labels: readonly ExtractedLabel[], resolver: RecipeR
     if (label === '') continue;
     // Commas would be read as separators between entries; a label is one entry.
     let resolved = resolver.resolveLine(label.replace(/[,;]/g, ' '));
-    // A misread code must not block a good name match, so retry without it.
+    // A misread code must not hide a good name match, so retry without it,
+    // but keep the discrepancy: the result is a suggestion, not a match.
     if (resolved.kind !== 'item' && code !== '' && name !== '') {
-      resolved = resolver.resolveLine([brand, name].filter(Boolean).join(' ').replace(/[,;]/g, ' '));
+      const byName = resolver.resolveLine([brand, name].filter(Boolean).join(' ').replace(/[,;]/g, ' '));
+      if (byName.kind === 'item') {
+        resolved = {
+          ...byName,
+          issue: byName.issue ?? `The code “${code}” matched nothing; this was found by name only.`,
+        };
+      }
     }
     const entry = toEntry(label, resolved);
-    const key =
-      entry.match !== null && entry.alternatives.length === 0 ? `item:${entry.match.id}` : `text:${label.toLowerCase()}`;
+    const confident = entry.match !== null && entry.alternatives.length === 0 && entry.issue === undefined;
+    const key = confident && entry.match !== null ? `item:${entry.match.id}` : `text:${label.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     entries.push(entry);
@@ -196,12 +227,63 @@ function base64ByteLength(data: string): number {
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 
 /**
+ * Read a request body as UTF-8 text, giving up as soon as more than
+ * `maxBytes` have arrived.
+ */
+export async function readBodyCapped(request: Request, maxBytes: number): Promise<string | 'too_large'> {
+  if (request.body === null) return '';
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return 'too_large';
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/** First bytes of each accepted format. */
+function hasImageSignature(base64: string, mediaType: ImageMediaType): boolean {
+  let head: string;
+  try {
+    head = atob(base64.slice(0, 16));
+  } catch {
+    return false;
+  }
+  const bytes = Array.from(head, (char) => char.charCodeAt(0));
+  const starts = (...expected: number[]) => expected.every((byte, index) => bytes[index] === byte);
+  switch (mediaType) {
+    case 'image/jpeg':
+      return starts(0xff, 0xd8, 0xff);
+    case 'image/png':
+      return starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+    case 'image/gif':
+      return head.startsWith('GIF87a') || head.startsWith('GIF89a');
+    case 'image/webp':
+      return head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP';
+  }
+}
+
+/**
  * Build the API as a Hono app. Mount it under the Worker, or call
  * `app.request(...)` directly in tests.
  */
 export function createIngestApp(dependencies: IngestDependencies) {
   const resolver = createRecipeResolver(dependencies.catalog);
   const limits = dependencies.limits ?? DEFAULT_LIMITS;
+  const catalogRevision = dependencies.catalogRevision ?? 0;
   const app = new Hono();
 
   const fail = (status: 400 | 403 | 413 | 415 | 422 | 429 | 502 | 503, code: string, message: string) =>
@@ -214,6 +296,7 @@ export function createIngestApp(dependencies: IngestDependencies) {
     c.json({
       ok: true,
       catalogSize: dependencies.catalog.length,
+      catalogRevision,
       photoImport: dependencies.extract !== undefined && dependencies.rateLimiter !== undefined,
     }),
   );
@@ -234,11 +317,13 @@ export function createIngestApp(dependencies: IngestDependencies) {
     const maxBody = Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 4096;
     if (declared > maxBody) return fail(413, 'too_large', 'That upload is too large.');
 
+    // Count bytes as they arrive and stop at the cap, so a body without a
+    // Content-Length (or with a false one) cannot make the Worker buffer it all.
+    const raw = await readBodyCapped(c.req.raw, maxBody);
+    if (raw === 'too_large') return fail(413, 'too_large', 'That upload is too large.');
     let body: unknown;
     try {
-      const text = await c.req.text();
-      if (text.length > maxBody) return fail(413, 'too_large', 'That upload is too large.');
-      body = JSON.parse(text);
+      body = JSON.parse(raw);
     } catch {
       return fail(400, 'invalid_json', 'The request body is not valid JSON.');
     }
@@ -255,7 +340,7 @@ export function createIngestApp(dependencies: IngestDependencies) {
       if (typeof text !== 'string') return fail(400, 'invalid_request', '"text" must be a string.');
       if (text.length > MAX_TEXT_LENGTH) return fail(413, 'too_large', 'That list is too long. Send it in parts.');
       const entries = resolver.resolve(text).map((resolved) => toEntry(cleanText(resolved.raw), resolved));
-      return c.json({ source: 'text', entries } satisfies IngestResponse, 200, { 'cache-control': 'no-store' });
+      return c.json({ source: 'text', catalogRevision, entries } satisfies IngestResponse, 200, { 'cache-control': 'no-store' });
     }
 
     // -- image ------------------------------------------------------------------
@@ -270,6 +355,9 @@ export function createIngestApp(dependencies: IngestDependencies) {
       return fail(400, 'invalid_request', '"image.data" must be base64 without a data-URL prefix.');
     }
     if (base64ByteLength(data) > MAX_IMAGE_BYTES) return fail(413, 'too_large', 'That photo is too large.');
+    if (!hasImageSignature(data, mediaType as ImageMediaType)) {
+      return fail(415, 'unsupported_image', 'That file is not the kind of image it claims to be.');
+    }
 
     const { extract, rateLimiter } = dependencies;
     if (extract === undefined || rateLimiter === undefined) {
@@ -301,7 +389,7 @@ export function createIngestApp(dependencies: IngestDependencies) {
     if (result.kind === 'unreadable') {
       return fail(502, 'vision_unreadable', 'The label reader returned something unusable. Try again.');
     }
-    return c.json({ source: 'image', entries: matchLabels(result.labels, resolver) } satisfies IngestResponse, 200, {
+    return c.json({ source: 'image', catalogRevision, entries: matchLabels(result.labels, resolver) } satisfies IngestResponse, 200, {
       'cache-control': 'no-store',
     });
   });

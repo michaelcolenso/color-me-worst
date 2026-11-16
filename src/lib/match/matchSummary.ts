@@ -10,7 +10,12 @@ import type { MatchMode, SolvedMatch } from '../color/matchSolver';
 import type { ColorCoordinates, SingleMatch, TwoPartMix } from '../color/types';
 
 /**
- * - `exact`: an owned item is an imperceptible match.
+ * Labels describe numerical similarity between catalogue colours, not proven
+ * physical interchangeability: catalogue colours are approximations, so no
+ * label claims more than "very close". Product identity ("you own this
+ * product") is a separate statement made by the views.
+ *
+ * - `exact`: an owned item's catalogue colour is within ΔE00 1.5.
  * - `close`: an owned item is a close substitute.
  * - `mix`: two owned items mixed get within reach.
  * - `approximate`: the best owned item is noticeably off but usable.
@@ -42,7 +47,7 @@ export interface MatchSummary {
 export const BUY_MIN_IMPROVEMENT = 1;
 
 export const VERDICT_LABELS: Readonly<Record<MatchVerdict, string>> = {
-  exact: 'Exact match',
+  exact: 'Very close colour',
   close: 'Close substitute',
   mix: 'Mix from your stash',
   approximate: 'Nearest you own',

@@ -6,3 +6,5 @@ coverage/
 .env*
 .wrangler/
 .dev.vars
+e2e-screenshots/
+.vitest/

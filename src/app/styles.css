@@ -873,3 +873,31 @@ textarea {
 .export-bar {
   margin-top: 0;
 }
+
+/* -- review findings: uncertain identities, unsampled pins, save status ------ */
+
+.stash-list li.unresolved {
+  border-style: dashed;
+  border-color: var(--mid);
+}
+
+.stash-item-text .warning {
+  display: block;
+  margin-top: 4px;
+}
+
+.pin.unsampled {
+  background: repeating-linear-gradient(45deg, #ffffff 0 4px, #9a9a9a 4px 8px);
+}
+
+.source-note {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.save-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
