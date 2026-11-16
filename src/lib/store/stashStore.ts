@@ -739,6 +739,9 @@ export class StashStore {
     if (adopted > 0) {
       this.solver = undefined;
       this.changed();
+      // A tab still on an older catalogue writes under former ids. Run after
+      // the queued read, never inside it: the migration queues writes of its own.
+      await this.migrateFormerIdsSafely();
     }
     return adopted;
   }

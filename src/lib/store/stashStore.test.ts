@@ -760,6 +760,31 @@ describe('StashStore: persistence', () => {
     expect(store.isOwned('brand:line:new')).toBe(true);
   });
 
+  it('applies former-id edits made in a tab still on the older catalogue', async () => {
+    const factory = new IDBFactory();
+    let clock = 100;
+    const now = () => clock;
+    const oldTab = await StashStore.open(await createIndexedDbAdapter({ factory }), { now });
+    await oldTab.importCatalog([item('brand:line:old', '#aa0000')], 1);
+    await oldTab.setOwned('brand:line:old', true); // 100
+
+    const newTab = await StashStore.open(await createIndexedDbAdapter({ factory }), { now });
+    await newTab.importCatalog([item('brand:line:new', '#aa0000', { formerIds: ['brand:line:old'] })], 2);
+    expect(newTab.isOwned('brand:line:new')).toBe(true);
+
+    clock = 200;
+    await oldTab.setOwned('brand:line:old', false); // removed in the old tab at 200
+    await newTab.refreshFromStorage();
+    expect(newTab.isOwned('brand:line:new')).toBe(false);
+
+    clock = 300;
+    await oldTab.setOwned('brand:line:old', true, { quantity: 6 });
+    await newTab.refreshFromStorage();
+    expect(newTab.getStashEntry('brand:line:new')).toMatchObject({ deleted: false, quantity: 6 });
+    oldTab.close();
+    newTab.close();
+  });
+
   it('finishes a rename migration on the next start if its save failed', async () => {
     const factory = new IDBFactory();
     let store = await StashStore.open(await createIndexedDbAdapter({ factory }));
