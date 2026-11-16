@@ -654,6 +654,35 @@ describe('StashStore: persistence', () => {
     expect(after.isOwned('brand:line:old')).toBe(false);
   });
 
+  it('does not resurrect an item removed after the backup it is restored from', async () => {
+    let clock = 100;
+    const store = await StashStore.open(createMemoryAdapter(), { now: () => clock });
+    await store.importCatalog([item('brand:line:new', '#aa0000', { formerIds: ['brand:line:old'] })], 2);
+    clock = 200;
+    await store.setOwned('brand:line:new', true);
+    clock = 300;
+    await store.setOwned('brand:line:new', false); // removed at 300
+    clock = 400;
+    // An older backup (time 100) still lists the item under its former id.
+    await store.restoreBackup({
+      format: 'color-me-worst/stash-backup@1',
+      exportedAt: new Date(100).toISOString(),
+      catalogRevision: 1,
+      entries: [{ itemId: 'brand:line:old', quantity: 1, updatedAt: 100, deleted: false }],
+    });
+    expect(store.isOwned('brand:line:new')).toBe(false);
+    expect(store.isOwned('brand:line:old')).toBe(false);
+
+    // A former-id entry newer than the removal does win.
+    await store.restoreBackup({
+      format: 'color-me-worst/stash-backup@1',
+      exportedAt: new Date(500).toISOString(),
+      catalogRevision: 1,
+      entries: [{ itemId: 'brand:line:old', quantity: 2, updatedAt: 500, deleted: false }],
+    });
+    expect(store.getStashEntry('brand:line:new')).toMatchObject({ deleted: false, quantity: 2 });
+  });
+
   it('finishes a rename migration on the next start if its save failed', async () => {
     const factory = new IDBFactory();
     let store = await StashStore.open(await createIndexedDbAdapter({ factory }));

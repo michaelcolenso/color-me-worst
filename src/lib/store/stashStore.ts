@@ -373,7 +373,9 @@ export class StashStore {
         const old = this.stash.get(former);
         if (old === undefined || old.deleted) continue;
         const current = this.stash.get(item.id);
-        if (current === undefined || current.deleted) {
+        // Last write wins here too: a removal under the current id that is
+        // newer than the former-id entry stands; an older one gives way.
+        if (current === undefined || (current.deleted && current.updatedAt < old.updatedAt)) {
           changed.push({
             itemId: item.id,
             quantity: old.quantity,
