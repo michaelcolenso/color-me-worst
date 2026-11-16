@@ -683,6 +683,23 @@ describe('StashStore: persistence', () => {
     expect(store.getStashEntry('brand:line:new')).toMatchObject({ deleted: false, quantity: 2 });
   });
 
+  it('keeps the newest entry when several former ids of one item are owned', async () => {
+    const store = await StashStore.open(createMemoryAdapter(), { now: () => 1000 });
+    await store.importCatalog([item('brand:line:new', '#aa0000', { formerIds: ['brand:line:old1', 'brand:line:old2'] })], 2);
+    await store.restoreBackup({
+      format: 'color-me-worst/stash-backup@1',
+      exportedAt: new Date(300).toISOString(),
+      catalogRevision: 1,
+      entries: [
+        { itemId: 'brand:line:old1', quantity: 8, note: 'newest', updatedAt: 300, deleted: false },
+        { itemId: 'brand:line:old2', quantity: 1, note: 'oldest', updatedAt: 100, deleted: false },
+      ],
+    });
+    expect(store.getStashEntry('brand:line:new')).toMatchObject({ deleted: false, quantity: 8, note: 'newest' });
+    expect(store.isOwned('brand:line:old1')).toBe(false);
+    expect(store.isOwned('brand:line:old2')).toBe(false);
+  });
+
   it('finishes a rename migration on the next start if its save failed', async () => {
     const factory = new IDBFactory();
     let store = await StashStore.open(await createIndexedDbAdapter({ factory }));

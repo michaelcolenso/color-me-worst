@@ -201,6 +201,8 @@ async function run(label, viewport) {
             alternatives: [{ id: 'vallejo:model-color:70-951' }],
             issue: '“white” doesn’t fit Vallejo Black. Check which product is meant.',
           },
+          // Ambiguous on the server, but this device knows only one of the candidates.
+          { label: 'Ivory', match: { id: 'vallejo:model-color:70-918' }, alternatives: [{ id: 'not:in:this-catalogue' }] },
         ],
       }),
     });
@@ -211,7 +213,9 @@ async function run(label, viewport) {
   const jpegHead = Buffer.from(sent.image.data, 'base64').subarray(0, 2);
   assert.deepEqual([...jpegHead], [0xff, 0xd8], 'the upload really is JPEG data, base64 encoded');
   assert.equal(sent.text, undefined, 'only the image is sent');
-  assert.equal(await review.count(), 4, 'each label the server read is listed');
+  assert.equal(await review.count(), 5, 'each label the server read is listed');
+  assert.equal(await review.nth(4).locator('select option').count(), 2, 'an uncertain row with one known candidate can still be chosen');
+  assert.equal(await review.nth(4).locator('input[type=checkbox]').isChecked(), false, 'and is not ticked until it is');
   assert.equal(await review.nth(3).locator('input[type=checkbox]').isChecked(), false, 'a contradictory label is not ticked');
   await assertVisible(review.nth(3).getByText('doesn’t fit Vallejo Black'), 'the contradiction is shown');
   await assertVisible(review.nth(0).getByText('DMC Black'), 'a matched label shows the catalogue item');

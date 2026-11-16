@@ -19,6 +19,8 @@ interface ReviewRow {
    */
   chosenId: string | null;
   selected: boolean;
+  /** True when the reading was not certain: the product selector stays offered even after a choice. */
+  uncertain: boolean;
   /** Why the best guess needs checking, e.g. a code and a name that disagree. */
   issue?: string;
   /** Why nothing matched, when known. */
@@ -110,6 +112,7 @@ export function StashImport() {
         candidates,
         chosenId: certain ? first.id : null,
         selected: certain && !store.isOwned(first.id),
+        uncertain: !certain,
         ...(issue !== undefined ? { issue } : {}),
         ...(reason !== undefined ? { reason } : {}),
       });
@@ -303,7 +306,9 @@ export function StashImport() {
               {rows.map((row) => {
                 const item = row.candidates.find((candidate) => candidate.id === row.chosenId);
                 const alreadyOwned = item !== undefined && store.isOwned(item.id);
-                const needsChoice = row.candidates.length > 0 && (row.candidates.length > 1 || row.issue !== undefined);
+                // Offered whenever the reading was uncertain, even with one candidate left:
+                // a newer server catalogue can name products this device does not know.
+                const needsChoice = row.candidates.length > 0 && row.uncertain;
                 return (
                   <li key={row.key} className={item ? undefined : row.candidates.length > 0 ? 'unresolved' : 'unmatched'}>
                     <input

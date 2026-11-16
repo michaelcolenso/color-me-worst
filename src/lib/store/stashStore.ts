@@ -369,23 +369,28 @@ export class StashStore {
     const timestamp = this.now();
     const changed: StashEntry[] = [];
     for (const item of items) {
+      // Every live entry under any former id goes; only the newest of them
+      // can carry over, whatever order the former ids are listed in.
+      let newest: StashEntry | undefined;
       for (const former of item.formerIds ?? []) {
         const old = this.stash.get(former);
         if (old === undefined || old.deleted) continue;
-        const current = this.stash.get(item.id);
-        // Last write wins here too: a removal under the current id that is
-        // newer than the former-id entry stands; an older one gives way.
-        if (current === undefined || (current.deleted && current.updatedAt < old.updatedAt)) {
-          changed.push({
-            itemId: item.id,
-            quantity: old.quantity,
-            ...(old.note !== undefined ? { note: old.note } : {}),
-            updatedAt: this.stamp(timestamp, current),
-            deleted: false,
-            dirty: true,
-          });
-        }
+        if (newest === undefined || old.updatedAt > newest.updatedAt) newest = old;
         changed.push({ ...old, updatedAt: this.stamp(timestamp, old), deleted: true, dirty: true });
+      }
+      if (newest === undefined) continue;
+      const current = this.stash.get(item.id);
+      // Last write wins here too: a removal under the current id that is
+      // newer than the former-id entry stands; an older one gives way.
+      if (current === undefined || (current.deleted && current.updatedAt < newest.updatedAt)) {
+        changed.push({
+          itemId: item.id,
+          quantity: newest.quantity,
+          ...(newest.note !== undefined ? { note: newest.note } : {}),
+          updatedAt: this.stamp(timestamp, current),
+          deleted: false,
+          dirty: true,
+        });
       }
     }
     await this.commit(changed);
