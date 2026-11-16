@@ -302,6 +302,8 @@ export class StashStore {
     ]);
     for (const entry of stash) store.stash.set(entry.itemId, entry);
     store.indexCatalog(catalog, revision);
+    // Finish any rename migration a previous session could not save.
+    await store.migrateFormerIdsSafely();
     return store;
   }
 
@@ -340,7 +342,22 @@ export class StashStore {
     await this.enqueueWrite(() => this.adapter.replaceCatalog(items, revision));
     this.indexCatalog(items, revision);
     this.changed();
-    await this.migrateFormerIds(items);
+    await this.migrateFormerIdsSafely();
+  }
+
+  /**
+   * Run {@link migrateFormerIds} without letting a failed save fail the
+   * caller: the catalogue is already stored, the moved entries stay in memory
+   * and are reported through {@link hasUnpersistedChanges}, and the move is
+   * redone the next time the store opens, because it is derived from the
+   * stored catalogue and stash rather than from the import itself.
+   */
+  private async migrateFormerIdsSafely(): Promise<void> {
+    try {
+      await this.migrateFormerIds(this.catalog);
+    } catch {
+      // Reported through hasUnpersistedChanges / persistenceError.
+    }
   }
 
   /**
@@ -575,7 +592,10 @@ export class StashStore {
    * @returns how many local entries changed.
    */
   async applyRemote(remote: readonly RemoteStashEntry[]): Promise<number> {
-    return this.merge(remote, false);
+    const changed = await this.merge(remote, false);
+    // Another device may still be on a catalogue from before a rename.
+    await this.migrateFormerIdsSafely();
+    return changed;
   }
 
   // -- backup ---------------------------------------------------------------
@@ -625,7 +645,10 @@ export class StashStore {
         ...(entry.note !== undefined ? { note: entry.note } : {}),
       });
     }
-    return this.merge(entries, true);
+    const changed = await this.merge(entries, true);
+    // A backup made before a rename names the old id.
+    await this.migrateFormerIdsSafely();
+    return changed;
   }
 
   private async merge(remote: readonly RemoteStashEntry[], dirty: boolean): Promise<number> {

@@ -638,6 +638,49 @@ describe('StashStore: persistence', () => {
     ).rejects.toThrow(/malformed/);
   });
 
+  it('moves ownership onto a renamed item when restoring a backup made before the rename', async () => {
+    const v1 = [item('brand:line:old', '#aa0000')];
+    const v2 = [item('brand:line:new', '#aa0000', { formerIds: ['brand:line:old'] })];
+    const before = await StashStore.open(createMemoryAdapter());
+    await before.importCatalog(v1, 1);
+    await before.setOwned('brand:line:old', true, { quantity: 3 });
+    const backup = JSON.parse(JSON.stringify(before.exportBackup()));
+
+    const after = await StashStore.open(createMemoryAdapter());
+    await after.importCatalog(v2, 2);
+    await after.restoreBackup(backup);
+    expect(after.isOwned('brand:line:new')).toBe(true);
+    expect(after.getStashEntry('brand:line:new')?.quantity).toBe(3);
+    expect(after.isOwned('brand:line:old')).toBe(false);
+  });
+
+  it('finishes a rename migration on the next start if its save failed', async () => {
+    const factory = new IDBFactory();
+    let store = await StashStore.open(await createIndexedDbAdapter({ factory }));
+    await store.importCatalog([item('brand:line:old', '#aa0000')], 1);
+    await store.setOwned('brand:line:old', true);
+    store.close();
+
+    const failing = await createIndexedDbAdapter({ factory });
+    failing.putStash = () => Promise.reject(new Error('disk full'));
+    store = await StashStore.open(failing);
+    // The catalogue itself is saved; only the ownership move fails. That must not fail the import.
+    await store.importCatalog([item('brand:line:new', '#aa0000', { formerIds: ['brand:line:old'] })], 2);
+    expect(store.isOwned('brand:line:new')).toBe(true);
+    expect(store.hasUnpersistedChanges).toBe(true);
+    store.close();
+
+    // Storage has recovered; the catalogue is already current, so no import runs.
+    store = await StashStore.open(await createIndexedDbAdapter({ factory }));
+    expect(store.catalogRevision).toBe(2);
+    expect(store.isOwned('brand:line:new')).toBe(true);
+    expect(store.isOwned('brand:line:old')).toBe(false);
+    store.close();
+    store = await StashStore.open(await createIndexedDbAdapter({ factory }));
+    expect(store.isOwned('brand:line:new')).toBe(true); // and it was written, not just redone in memory
+    store.close();
+  });
+
   it('reports a clear error when IndexedDB is unavailable', async () => {
     await expect(createIndexedDbAdapter()).rejects.toThrow(/not available/);
   });
