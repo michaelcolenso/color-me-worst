@@ -736,6 +736,30 @@ describe('StashStore: persistence', () => {
     expect(store.isOwned('brand:line:old')).toBe(false);
   });
 
+  it('applies a newer removal recorded under a former id', async () => {
+    let clock = 100;
+    const store = await StashStore.open(createMemoryAdapter(), { now: () => clock });
+    await store.importCatalog([item('brand:line:new', '#aa0000', { formerIds: ['brand:line:old'] })], 2);
+    await store.setOwned('brand:line:new', true); // live at 100
+    clock = 1000;
+    const backup = (entries: RemoteStashEntry[]) => ({
+      format: 'color-me-worst/stash-backup@1',
+      exportedAt: new Date(0).toISOString(),
+      catalogRevision: 1,
+      entries,
+    });
+    // An older-catalogue device removed it at 300.
+    await store.restoreBackup(backup([{ itemId: 'brand:line:old', quantity: 1, updatedAt: 300, deleted: true }]));
+    expect(store.isOwned('brand:line:new')).toBe(false);
+
+    // A later re-add under the former id wins again; re-running the migration changes nothing more.
+    await store.restoreBackup(backup([{ itemId: 'brand:line:old', quantity: 4, updatedAt: 400, deleted: false }]));
+    expect(store.getStashEntry('brand:line:new')).toMatchObject({ deleted: false, quantity: 4 });
+    // Reopening (which re-runs the migration) must not undo it via the migration's own tombstone.
+    await store.restoreBackup(backup([]));
+    expect(store.isOwned('brand:line:new')).toBe(true);
+  });
+
   it('finishes a rename migration on the next start if its save failed', async () => {
     const factory = new IDBFactory();
     let store = await StashStore.open(await createIndexedDbAdapter({ factory }));

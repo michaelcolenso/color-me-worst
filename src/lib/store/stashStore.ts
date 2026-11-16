@@ -365,12 +365,14 @@ export class StashStore {
    * a corrected code) onto its current id, so a catalogue update never makes
    * an owned item silently disappear from matching.
    *
-   * This is last-write-wins, like every other merge here, and it keeps the
-   * time of the edit being moved rather than the time the move happened:
-   * the newest former-id entry replaces the current entry only if it is
-   * newer, and the former-id entries become tombstones just one tick newer
-   * than themselves, so a genuinely later edit under a former id (from an
-   * older device or another backup) still wins and is moved in turn.
+   * Last-write-wins, like every other merge here, using the time of the edit
+   * being moved rather than the time the move happened. The newest entry
+   * across the former ids, a removal included, replaces the current entry
+   * only if it is strictly newer. A live former-id entry is then retired with
+   * a tombstone carrying the SAME time as the edit that was moved: it can
+   * therefore never outrank the current entry it was moved into, while a
+   * genuinely later edit or removal under a former id (from a device or
+   * backup with the older catalogue) still wins and is moved in turn.
    */
   private async migrateFormerIds(items: readonly CatalogItem[]): Promise<void> {
     const changed: StashEntry[] = [];
@@ -378,22 +380,28 @@ export class StashStore {
       let newest: StashEntry | undefined;
       for (const former of item.formerIds ?? []) {
         const old = this.stash.get(former);
-        if (old === undefined || old.deleted) continue;
+        if (old === undefined) continue;
         if (newest === undefined || old.updatedAt > newest.updatedAt) newest = old;
-        changed.push({ ...old, updatedAt: old.updatedAt + 1, deleted: true, dirty: true });
+        if (!old.deleted) changed.push({ ...old, deleted: true, dirty: true });
       }
       if (newest === undefined) continue;
       const current = this.stash.get(item.id);
-      if (current === undefined || current.updatedAt < newest.updatedAt) {
-        changed.push({
-          itemId: item.id,
-          quantity: newest.quantity,
-          ...(newest.note !== undefined ? { note: newest.note } : {}),
-          updatedAt: newest.updatedAt,
-          deleted: false,
-          dirty: true,
-        });
+      if (current !== undefined && current.updatedAt >= newest.updatedAt) continue;
+      if (newest.deleted) {
+        // A removal under a former id: remove the current item too, if it is there.
+        if (current !== undefined && !current.deleted) {
+          changed.push({ ...current, updatedAt: newest.updatedAt, deleted: true, dirty: true });
+        }
+        continue;
       }
+      changed.push({
+        itemId: item.id,
+        quantity: newest.quantity,
+        ...(newest.note !== undefined ? { note: newest.note } : {}),
+        updatedAt: newest.updatedAt,
+        deleted: false,
+        dirty: true,
+      });
     }
     await this.commit(changed);
   }
