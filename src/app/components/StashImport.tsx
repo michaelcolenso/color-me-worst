@@ -281,7 +281,7 @@ export function StashImport() {
         </div>
         <p className="muted small">
           A pasted list is matched on this device. A photo is different: it is sent to this app’s server and on to
-          Anthropic’s Claude model to read the labels, under Anthropic’s API terms. This app does not store the photo
+          Google’s Gemini model to read the labels, under Google’s Gemini API terms. This app does not store the photo
           or log what is read from it.
         </p>
 

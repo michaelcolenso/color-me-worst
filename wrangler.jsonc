@@ -24,9 +24,9 @@
   // Do not send Wrangler usage telemetry from this project.
   "send_metrics": false
 
-  // Photo import stays switched off until an Anthropic API key is stored as a
-  // secret (never in this file):
-  //      npx wrangler secret put ANTHROPIC_API_KEY
+  // Photo import stays switched off until a Gemini API key (from Google AI
+  // Studio) is stored as a secret (never in this file):
+  //      npx wrangler secret put GEMINI_API_KEY
   //
-  // Optional: "vars": { "VISION_MODEL": "claude-sonnet-5-5" }
+  // Optional: "vars": { "VISION_MODEL": "gemini-3.8-flash" }
 }

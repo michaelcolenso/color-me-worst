@@ -418,7 +418,7 @@ confirms before anything is added.
 
 ```
 photo -> app downsizes to a JPEG (max 1600 px) -> POST /api/ingest
-      -> Claude reads the text on each label into { brand, name, code }
+      -> Gemini reads the text on each label into { brand, name, code }
       -> deterministic matching against the catalogue
       -> candidates back to the app for review
 ```
@@ -432,7 +432,7 @@ catalogue does not contain.
 | Path | What it is |
 | --- | --- |
 | `worker/ingest.ts` | The API: validation, origin check, rate limits, label matching. No Cloudflare or model dependency, so it is fully unit-tested |
-| `worker/vision.ts` | The one model call, using the Anthropic SDK with a JSON schema for the reply |
+| `worker/vision.ts` | The one model call, using Google's `@google/genai` SDK with a JSON schema for the reply, which is validated again on our side |
 | `worker/rateLimiter.ts` | Durable Object that counts photo imports atomically |
 | `worker/index.ts` | Cloudflare Worker entry: serves the built app and answers `/api/*` |
 | `wrangler.jsonc` | Worker configuration |
@@ -450,11 +450,21 @@ Safeguards on the endpoint:
   cross-origin headers. Images over 5 MB, other file types, malformed base64
   and oversized bodies are rejected before any model call.
 - **Privacy.** The Worker does not store the photo or log its contents.
-  Anthropic's own data handling applies to what is sent to the model.
+  Google's Gemini API terms govern what is sent to the model. Check them for
+  the tier your key is on before launch: how Google may use submitted content
+  can differ between free and paid use. (Not checked as part of this change.)
 - **Failure.** Upstream errors are never echoed to the client.
 
-The model is `claude-sonnet-5-5` (the specification named Claude Sonnet),
-overridable with a `VISION_MODEL` variable.
+The model is Gemini, through the `@google/genai` SDK (3.x, which needs Node 22
+or later for local tooling). The default is `gemini-3.8-flash`, the model the
+SDK's own documentation uses; override it with a `VISION_MODEL` variable, and
+check Google's model list for what your key can use. Each attempt times out
+after 45 s, with one retry. Every call logs one JSON line with the model,
+token counts (input, output and thinking), outcome and duration, and nothing
+from the photo. A `GEMINI_BASE_URL` variable routes calls through a gateway.
+
+The label reader was Claude until November 2026; the swap touched only
+`worker/vision.ts`, the Worker's variable names and the disclosure text.
 
 ### Recipe card export
 
@@ -476,7 +486,7 @@ same drawing, so its colours are very close but not bit-exact.
 Nothing has been deployed and no accounts or keys were created. To go live:
 
 ```sh
-npx wrangler secret put ANTHROPIC_API_KEY   # only needed for "Read a photo"
+npx wrangler secret put GEMINI_API_KEY      # only needed for "Read a photo"; key from Google AI Studio
 npm run deploy                              # builds, then deploys
 ```
 

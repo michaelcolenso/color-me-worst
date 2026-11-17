@@ -11,7 +11,7 @@
  * anything it reads that matches nothing is reported as unmatched. Its output
  * is treated as untrusted text throughout.
  *
- * This module has no dependency on Cloudflare or on the Anthropic SDK: the
+ * This module has no dependency on Cloudflare or on the model's SDK: the
  * vision call and the rate limiter are passed in, so the whole request path
  * is unit-tested with fakes.
  */
@@ -52,7 +52,7 @@ export type VisionResult =
   /** The model answered, but not in the required shape. */
   | { kind: 'unreadable' };
 
-/** Reads product labels out of an image. Implemented with Claude in vision.ts. */
+/** Reads product labels out of an image. Implemented with Gemini in vision.ts. */
 export type VisionExtractor = (image: IngestImage) => Promise<VisionResult>;
 
 /**
