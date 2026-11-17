@@ -96,6 +96,10 @@ describe('recipeParser', () => {
     expect(mixed.kind === 'item' && mixed.item.name).toBe('Black');
     expect(mixed.kind === 'item' && mixed.alternatives.map((item) => item.name)).toContain('White');
     expect(mixed.kind === 'item' && mixed.issue).toMatch(/white/);
+    // The same holds when the second name has a typo the resolver otherwise tolerates.
+    const typo = resolver.resolveLine('Vallejo 70.950 Chocolate Browm');
+    expect(isConfident(typo)).toBe(false);
+    expect(typo.kind === 'item' && typo.alternatives.map((item) => item.name)).toContain('Chocolate Brown');
   });
 
   it('still resolves consistent evidence, with notes and quantities around it', () => {

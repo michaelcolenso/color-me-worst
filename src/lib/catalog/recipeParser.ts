@@ -206,17 +206,29 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
   function conflictingWords(entry: IndexedItem, tokens: readonly string[], brandWords: ReadonlySet<string>): string[] {
     const unexplained = tokens.filter((token) => !brandWords.has(token) && !explains(entry, token));
     const conflicts = new Set(unexplained.filter((token) => /\d/.test(token)));
-    const present = new Set(tokens);
-    for (const word of unexplained) {
-      for (const other of byNameWord.get(word) ?? []) {
+    const words = unexplained.filter((token) => !/\d/.test(token));
+    if (words.length === 0) return tokens.filter((token) => conflicts.has(token));
+    // The same tolerance as candidate scoring: exact, or one edit in a word of 5+ letters.
+    const matches = (token: string, nameWord: string) =>
+      token === nameWord || (nameWord.length >= 5 && token.length >= 4 && withinOneEdit(token, nameWord));
+    const present = (nameWord: string) => tokens.some((token) => matches(token, nameWord));
+    const seen = new Set<IndexedItem>();
+    for (const word of words) {
+      // Exact hits come from the index; near misses need a scan, which only
+      // runs for lines that already have an unexplained word.
+      const exact = byNameWord.get(word) ?? [];
+      const others = exact.length > 0 ? exact : indexed.filter((other) => other.nameTokens.some((t) => matches(word, t)));
+      for (const other of others) {
+        if (seen.has(other)) continue;
+        seen.add(other);
         if (other === entry || other.item.name === entry.item.name) continue;
-        if (other.nameTokens.every((token) => present.has(token))) {
-          for (const token of other.nameTokens) if (unexplained.includes(token)) conflicts.add(token);
-        }
+        if (!other.nameTokens.every(present)) continue;
+        for (const token of words) if (other.nameTokens.some((nameWord) => matches(token, nameWord))) conflicts.add(token);
       }
     }
     return tokens.filter((token) => conflicts.has(token));
   }
+
 
   function resolveLine(line: string): ResolvedRecipeLine {
     return resolveEntry(line).resolved;
