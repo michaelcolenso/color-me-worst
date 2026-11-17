@@ -2,7 +2,7 @@
 
 ## Set up
 
-Node 20 or later.
+Node 22 or later (the Gemini SDK requires it).
 
 ```sh
 npm ci

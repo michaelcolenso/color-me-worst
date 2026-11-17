@@ -5,16 +5,16 @@
  * Bindings (see wrangler.jsonc):
  *   ASSETS             the built app in dist/
  *   RATE_LIMITER        Durable Object namespace that counts photo imports
- *   ANTHROPIC_API_KEY   secret; photo import is off without it
+ *   GEMINI_API_KEY      secret; photo import is off without it
  *   VISION_MODEL        optional model override
- *   ANTHROPIC_BASE_URL  optional; route model calls through a gateway
+ *   GEMINI_BASE_URL     optional; route model calls through a gateway
  */
 
 import type { CatalogBundle } from '../src/lib/catalog/seedBuilder';
 import seedJson from '../src/data/catalogSeed.json';
 import { createIngestApp } from './ingest';
 import { createDurableRateLimiter, type RateLimitNamespace } from './rateLimiter';
-import { createClaudeVisionExtractor } from './vision';
+import { createGeminiVisionExtractor } from './vision';
 
 // The runtime finds Durable Object classes among the entry module's exports.
 export { RateLimitCounter } from './rateLimiter';
@@ -22,9 +22,9 @@ export { RateLimitCounter } from './rateLimiter';
 interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
   RATE_LIMITER?: RateLimitNamespace;
-  ANTHROPIC_API_KEY?: string;
+  GEMINI_API_KEY?: string;
   VISION_MODEL?: string;
-  ANTHROPIC_BASE_URL?: string;
+  GEMINI_BASE_URL?: string;
 }
 
 const bundle = seedJson as unknown as CatalogBundle;
@@ -38,12 +38,12 @@ export default {
     const app = createIngestApp({
       catalog,
       catalogRevision: bundle.revision,
-      ...(env.ANTHROPIC_API_KEY
+      ...(env.GEMINI_API_KEY
         ? {
-            extract: createClaudeVisionExtractor({
-              apiKey: env.ANTHROPIC_API_KEY,
+            extract: createGeminiVisionExtractor({
+              apiKey: env.GEMINI_API_KEY,
               ...(env.VISION_MODEL ? { model: env.VISION_MODEL } : {}),
-              ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+              ...(env.GEMINI_BASE_URL ? { baseUrl: env.GEMINI_BASE_URL } : {}),
             }),
           }
         : {}),
