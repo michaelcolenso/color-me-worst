@@ -174,6 +174,21 @@ async function run(label, viewport) {
   await assertVisible(review.nth(1).getByText('Not in the catalogue'), 'an unrecognised line is reported');
   await assertVisible(review.nth(2).getByText('Already owned'), 'an owned item is marked');
   assert.equal(await review.nth(2).locator('input[type=checkbox]').isDisabled(), true, 'an owned item is not added twice');
+  // A paint with an older version of the same name: the current one is chosen, the old one offered.
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByLabel('Paste a list of what you own').fill('Army Painter Greedy Gold');
+  await page.getByRole('button', { name: 'Find these' }).click();
+  await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
+  assert.equal(await review.nth(0).locator('select option').count(), 2, 'the current and the older version are both offered');
+  assert.match(await review.nth(0).locator('select option:checked').textContent(), /Warpaints Fanatic/, 'the current version is chosen');
+  assert.equal(await review.nth(0).locator('input[type=checkbox]').isChecked(), true, 'a confident match stays ticked');
+  await review.nth(0).locator('select').selectOption({ index: 1 });
+  assert.match(await review.nth(0).locator('select option:checked').textContent(), /Warpaints ·/, 'the older version can be chosen');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByLabel('Paste a list of what you own').fill('Ivory\nUnicorn Tears\nMephiston Red, Mephiston Red');
+  await page.getByRole('button', { name: 'Find these' }).click();
+  await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
+  await review.nth(0).locator('select').selectOption({ label: 'Vallejo Ivory · Model Color · 70.918' });
   await page.getByRole('button', { name: 'Add 1 to my stash' }).click();
   await assertVisible(page.getByText('Added 1 to your stash.'), 'the list import confirms');
   assert.equal(await page.locator('.tab .count').textContent(), String(STASH.length + 1), 'the list import adds one item');
@@ -467,6 +482,9 @@ async function run(label, viewport) {
   await assertVisible(page.getByText('1 to choose'), 'an ambiguous recipe line is counted as unresolved');
   await page.locator('.recipe-table select').first().selectOption({ label: 'Vallejo Ivory · Model Color' });
   await assertGone(page.getByText('1 to choose'), 'choosing resolves the line');
+  await page.getByLabel('Supply list').fill('Army Painter Greedy Gold');
+  await page.locator('.recipe-table select').first().waitFor();
+  assert.equal(await page.locator('.recipe-table select option').count(), 2, 'the recipe view offers the older version too');
   await page.getByRole('button', { name: 'Use an example' }).click();
   await assertVisible(page.getByRole('button', { name: 'Copy list' }), 'the shopping list can be copied');
   await shot('6-recipe');

@@ -57,6 +57,14 @@ export type ResolvedRecipeLine =
       reason?: string;
     };
 
+/**
+ * Every product a resolved item line could mean, best guess first: the
+ * equally good alternatives, then older versions of the same paint.
+ */
+export function candidatesOf(line: Extract<ResolvedRecipeLine, { kind: 'item' }>): CatalogItem[] {
+  return [line.item, ...line.alternatives, ...(line.olderVersions ?? [])];
+}
+
 /** True when a resolved line can be acted on without asking the user. */
 export function isConfident(line: ResolvedRecipeLine): boolean {
   return line.kind === 'color' || (line.kind === 'item' && line.alternatives.length === 0 && line.issue === undefined);

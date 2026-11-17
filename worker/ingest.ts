@@ -124,6 +124,8 @@ export interface IngestEntry {
   match: IngestItemRef | null;
   /** Other candidates; when non-empty the user must choose. */
   alternatives: IngestItemRef[];
+  /** Discontinued versions of `match` (same brand and name). Offered, but no reason for doubt. */
+  olderVersions?: IngestItemRef[];
   /**
    * Present when the label contradicts `match` (e.g. a code and a name that
    * belong to different products), or `match` was found by name after the
@@ -166,6 +168,7 @@ function toEntry(label: string, resolved: ResolvedRecipeLine): IngestEntry {
     label,
     match: toRef(resolved.item),
     alternatives: resolved.alternatives.map(toRef),
+    ...(resolved.olderVersions !== undefined ? { olderVersions: resolved.olderVersions.map(toRef) } : {}),
     ...(resolved.issue !== undefined ? { issue: resolved.issue } : {}),
   };
 }

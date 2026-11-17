@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 
-import { createRecipeResolver, isConfident } from '../../lib/catalog/recipeParser';
+import { candidatesOf, createRecipeResolver, isConfident } from '../../lib/catalog/recipeParser';
 import type { CatalogItem } from '../../lib/color/types';
 import { decodeImage } from '../../lib/image/canvasIo';
 import { useStore } from '../store';
@@ -42,6 +42,7 @@ interface ServerEntry {
   label: string;
   match: { id: string } | null;
   alternatives: Array<{ id: string }>;
+  olderVersions?: Array<{ id: string }>;
   issue?: string;
   reason?: string;
 }
@@ -102,7 +103,8 @@ export function StashImport() {
     const next: ReviewRow[] = [];
     found.forEach(({ label, candidates, confident, issue, reason }, index) => {
       const first = candidates[0];
-      const certain = confident && first !== undefined && candidates.length === 1;
+      // Confident means one product fits; further candidates are only older versions of it.
+      const certain = confident && first !== undefined;
       const identity = certain ? `item:${first.id}` : `text:${label.trim().toLowerCase()}`;
       if (seen.has(identity)) return;
       seen.add(identity);
@@ -137,7 +139,7 @@ export function StashImport() {
       .map(
         (line): Found => ({
           label: line.raw,
-          candidates: line.kind === 'item' ? [line.item, ...line.alternatives] : [],
+          candidates: line.kind === 'item' ? candidatesOf(line) : [],
           confident: isConfident(line),
           ...(line.kind === 'item' && line.issue !== undefined ? { issue: line.issue } : {}),
           ...(line.kind === 'unknown' && line.reason !== undefined ? { reason: line.reason } : {}),
@@ -190,7 +192,7 @@ export function StashImport() {
       }
       // The server names items by id; only ids this device's catalogue knows are used.
       const found = body.entries.map((entry): Found => {
-        const candidates = [entry.match, ...entry.alternatives]
+        const candidates = [entry.match, ...entry.alternatives, ...(entry.olderVersions ?? [])]
           .map((ref) => (ref ? store.getItem(ref.id) : undefined))
           .filter((item): item is CatalogItem => item !== undefined);
         return {
@@ -306,9 +308,11 @@ export function StashImport() {
               {rows.map((row) => {
                 const item = row.candidates.find((candidate) => candidate.id === row.chosenId);
                 const alreadyOwned = item !== undefined && store.isOwned(item.id);
-                // Offered whenever the reading was uncertain, even with one candidate left:
-                // a newer server catalogue can name products this device does not know.
-                const needsChoice = row.candidates.length > 0 && row.uncertain;
+                // Offered whenever the reading was uncertain, even with one candidate left
+                // (a newer server catalogue can name products this device does not know),
+                // and whenever there is more than one product to pick from, such as an
+                // older version of a confidently matched paint.
+                const needsChoice = row.candidates.length > 0 && (row.uncertain || row.candidates.length > 1);
                 return (
                   <li key={row.key} className={item ? undefined : row.candidates.length > 0 ? 'unresolved' : 'unmatched'}>
                     <input
@@ -360,7 +364,7 @@ export function StashImport() {
                               update(row.key, id === '' ? { chosenId: null, selected: false } : { chosenId: id, selected: !store.isOwned(id) });
                             }}
                           >
-                            <option value="">Choose a product…</option>
+                            {row.uncertain && <option value="">Choose a product…</option>}
                             {row.candidates.map((candidate) => (
                               <option key={candidate.id} value={candidate.id}>
                                 {candidate.brand} {candidate.name} · {candidate.line}

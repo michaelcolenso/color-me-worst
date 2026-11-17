@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createRecipeResolver, isConfident } from '../catalog/recipeParser';
+import { candidatesOf, createRecipeResolver, isConfident } from '../catalog/recipeParser';
 import type { CatalogBundle } from '../catalog/seedBuilder';
 import { colorFromHex } from '../color/colorConversions';
 import { createMatchSolver, predictMix } from '../color/index';
@@ -112,6 +112,15 @@ describe('recipeParser', () => {
     }
     // Two products on one line is a question, not an answer.
     expect(isConfident(resolver.resolveLine('Mephiston Red and Nuln Oil'))).toBe(false);
+  });
+
+  it('prefers the current paint over an older version of the same name, but still offers the older one', () => {
+    const line = resolver.resolveLine('Army Painter Greedy Gold');
+    expect(isConfident(line)).toBe(true);
+    if (line.kind !== 'item') throw new Error('expected an item');
+    expect(line.item.line).toBe('Warpaints Fanatic');
+    expect(line.olderVersions?.map((item) => item.line)).toEqual(['Warpaints']);
+    expect(candidatesOf(line).map((item) => item.line)).toEqual(['Warpaints Fanatic', 'Warpaints']);
   });
 
   it('reads hex colours as direct targets', () => {

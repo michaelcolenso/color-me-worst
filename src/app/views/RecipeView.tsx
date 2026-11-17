@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { createRecipeResolver, isConfident, type ResolvedRecipeLine } from '../../lib/catalog/recipeParser';
+import { candidatesOf, createRecipeResolver, isConfident, type ResolvedRecipeLine } from '../../lib/catalog/recipeParser';
 import type { CatalogItem, ColorCoordinates } from '../../lib/color/types';
 import {
   VERDICT_LABELS,
@@ -105,7 +105,7 @@ export function RecipeView() {
         };
       }
       const chosenId = choices[line.raw];
-      const chosen = [line.item, ...line.alternatives].find((candidate) => candidate.id === chosenId);
+      const chosen = candidatesOf(line).find((candidate) => candidate.id === chosenId);
       // An uncertain line has no item until the user picks one: no default guess.
       const item = chosen ?? (isConfident(line) ? line.item : undefined);
       if (item === undefined) return { key, line, ownsExact: false, unresolved: true };
@@ -227,7 +227,7 @@ export function RecipeView() {
                                 onChange={(event) => setChoices((current) => ({ ...current, [line.raw]: event.target.value }))}
                               >
                                 <option value="">Choose a product…</option>
-                                {[line.item, ...line.alternatives].map((candidate) => (
+                                {candidatesOf(line).map((candidate) => (
                                   <option key={candidate.id} value={candidate.id}>
                                     {candidate.brand} {candidate.name} · {candidate.line}
                                   </option>
@@ -246,14 +246,14 @@ export function RecipeView() {
                                   <ItemMeta item={row.needed.item} />
                                 </>
                               )}
-                              {line.kind === 'item' && !isConfident(line) && (
+                              {line.kind === 'item' && candidatesOf(line).length > 1 && (
                                 <label className="field inline choose">
                                   <span>Product:</span>
                                   <select
                                     value={row.needed.item?.id}
                                     onChange={(event) => setChoices((current) => ({ ...current, [line.raw]: event.target.value }))}
                                   >
-                                    {[line.item, ...line.alternatives].map((candidate) => (
+                                    {candidatesOf(line).map((candidate) => (
                                       <option key={candidate.id} value={candidate.id}>
                                         {candidate.brand} {candidate.name} · {candidate.line}
                                       </option>
