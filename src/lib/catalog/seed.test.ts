@@ -81,7 +81,13 @@ describe('seedBuilder', () => {
       expect(item.color).toEqual(expected);
       expect(item.colorSource).toBe('community');
     });
-    expect(catalog.brands.map((brand) => brand.id).sort()).toEqual(['citadel', 'dmc', 'monument-hobbies', 'vallejo']);
+    expect(catalog.brands.map((brand) => brand.id).sort()).toEqual([
+      'army-painter',
+      'citadel',
+      'dmc',
+      'monument-hobbies',
+      'vallejo',
+    ]);
   });
 
   it('rejects invalid rows with a message naming the row', () => {
@@ -196,10 +202,10 @@ describe('database schema (SQLite, as used by Cloudflare D1)', () => {
   });
 
   it('loads the seed, and loading it twice changes nothing', () => {
-    expect(count('brands')).toBe(4);
+    expect(count('brands')).toBe(catalog.brands.length);
     expect(count('catalog_items')).toBe(catalog.items.length);
     db.exec(committedSql);
-    expect(count('brands')).toBe(4);
+    expect(count('brands')).toBe(catalog.brands.length);
     expect(count('catalog_items')).toBe(catalog.items.length);
   });
 

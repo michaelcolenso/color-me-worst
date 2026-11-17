@@ -42,6 +42,8 @@ const server = await preview({ root, logLevel: 'error', preview: { port: 0, host
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 const browser = await chromium.launch();
 
+/** Number of items in the bundled catalogue, as the Stash tab reports it. */
+const CATALOG_SIZE = JSON.parse(readFileSync(join(root, 'src/data/catalogSeed.json'), 'utf8')).items.length;
 const STASH = ['Mephiston Red', 'White Scar', 'Abaddon Black', 'Averland Sunset', 'Macragge Blue', 'Rhinox Hide'];
 /** Items owned once the bulk-import steps have run: the six above, one from a pasted list, one from a photo. */
 const OWNED_AFTER_IMPORT = STASH.length + 2;
@@ -107,7 +109,7 @@ async function clickImage(page, x, y) {
 }
 
 const targetColor = (page, card = 0) =>
-  page.locator('.match-card').nth(card).getByTestId('swatch-target').evaluate((el) => getComputedStyle(el).backgroundColor);
+  page.locator('.match-card').nth(card).getByTestId('swatch-target').first().evaluate((el) => getComputedStyle(el).backgroundColor);
 
 async function run(label, viewport) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 2, hasTouch: label === 'phone' });
@@ -134,7 +136,7 @@ async function run(label, viewport) {
     await page.getByRole('button', { name: new RegExp(`^Add Citadel ${name} to my stash$`) }).click();
   }
   await page.getByLabel('Search').fill('');
-  await assertVisible(page.getByText(`${STASH.length} of 111`), 'owned count updates');
+  await assertVisible(page.getByText(`${STASH.length} of ${CATALOG_SIZE}`), 'owned count updates');
   await page.getByLabel('Only what I own').check();
   assert.equal(await page.locator('.stash-list li').count(), STASH.length, 'owned filter lists exactly the stash');
   await shot('2-stash');
@@ -328,7 +330,7 @@ async function run(label, viewport) {
 
   // -- recipe card export ----------------------------------------------------------
   const cardTarget = await targetColor(page);
-  const cardMatch = await page.locator('.match-card').first().getByTestId('swatch-match').evaluate((el) => getComputedStyle(el).backgroundColor);
+  const cardMatch = await page.locator('.match-card').first().getByTestId('swatch-match').first().evaluate((el) => getComputedStyle(el).backgroundColor);
   const save = async (name) => {
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name, exact: true }).click()]);
     const file = join(downloadDir, `${label}-${download.suggestedFilename()}`);

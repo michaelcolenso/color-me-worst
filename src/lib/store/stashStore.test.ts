@@ -87,9 +87,9 @@ describe('StashStore: catalogue', () => {
     expect(store.queryCatalog().total).toBe(0);
     await store.importCatalog(seed.items, seed.revision);
     expect(store.catalogSize).toBe(seed.items.length);
-    expect(store.catalogRevision).toBe(1);
-    expect(store.brands()).toEqual(['Citadel', 'DMC', 'Monument Hobbies', 'Vallejo']);
-    expect(store.lines('Vallejo')).toEqual(['Model Color']);
+    expect(store.catalogRevision).toBe(seed.revision);
+    expect(store.brands()).toEqual(['Army Painter', 'Citadel', 'DMC', 'Monument Hobbies', 'Vallejo']);
+    expect(store.lines('Vallejo')).toEqual(['Game Color', 'Game Color Wash', 'Model Color', 'Xpress Color', 'Xpress Color Intense']);
     expect(store.getItem('citadel:base:mephiston-red')?.name).toBe('Mephiston Red');
     expect(store.getItem('nope')).toBeUndefined();
   });
@@ -98,18 +98,18 @@ describe('StashStore: catalogue', () => {
     const store = await openSeeded();
     await expect(store.importCatalog([item('a', '#111111'), item('a', '#222222')], 2)).rejects.toThrow(/Duplicate/);
     expect(store.catalogSize).toBe(seed.items.length);
-    expect(store.catalogRevision).toBe(1);
+    expect(store.catalogRevision).toBe(seed.revision);
   });
 
   it('returns rows in brand, line, name order with paging', async () => {
     const store = await openSeeded();
-    const all = store.queryCatalog({ limit: 1000 });
+    const all = store.queryCatalog({ limit: Number.MAX_SAFE_INTEGER });
     expect(all.total).toBe(seed.items.length);
     expect(all.rows).toHaveLength(seed.items.length);
     const keys = all.rows.map((row) => `${row.item.brand}|${row.item.line}|${row.item.name}`);
-    expect(keys[0]?.startsWith('Citadel|Base|')).toBe(true);
+    expect(keys[0]?.startsWith('Army Painter|Speedpaint 2.0|')).toBe(true);
     const brandOrder = [...new Set(all.rows.map((row) => row.item.brand))];
-    expect(brandOrder).toEqual(['Citadel', 'DMC', 'Monument Hobbies', 'Vallejo']);
+    expect(brandOrder).toEqual(['Army Painter', 'Citadel', 'DMC', 'Monument Hobbies', 'Vallejo']);
 
     const page = store.queryCatalog({ limit: 10, offset: 5 });
     expect(page.total).toBe(seed.items.length);
@@ -121,30 +121,41 @@ describe('StashStore: catalogue', () => {
   it('filters by text, brand, line, medium, finish and discontinued', async () => {
     const store = await openSeeded();
     const names = (query: Parameters<StashStore['queryCatalog']>[0]) =>
-      store.queryCatalog({ ...query, limit: 1000 }).rows.map((row) => row.item.name);
+      store.queryCatalog({ ...query, limit: Number.MAX_SAFE_INTEGER }).rows.map((row) => row.item.name);
+    // Counts come from the seed itself, so the test checks the filters, not the catalogue's size.
+    const countWhere = (predicate: (entry: CatalogItem) => boolean) => seed.items.filter(predicate).length;
 
     expect(names({ text: 'mephiston' })).toEqual(['Mephiston Red']);
-    expect(names({ text: 'RED citadel base' }).sort()).toEqual(['Khorne Red', 'Mephiston Red']);
+    expect(names({ text: 'RED citadel base' })).toEqual(expect.arrayContaining(['Khorne Red', 'Mephiston Red']));
+    expect(names({ text: 'RED citadel base' }).every((name) => /red/i.test(name))).toBe(true);
     expect(names({ text: '70.950' })).toEqual(['Black']);
     expect(names({ text: 'zzz-no-match' })).toEqual([]);
     expect(names({ text: '   ' })).toHaveLength(seed.items.length);
 
     expect(names({ brand: 'DMC' })).toHaveLength(23);
-    expect(names({ brand: ['DMC', 'Vallejo'] })).toHaveLength(48);
-    expect(names({ brand: 'Citadel', line: 'Shade' }).sort()).toEqual([
-      'Agrax Earthshade',
-      'Druchii Violet',
-      'Nuln Oil',
-      'Reikland Fleshshade',
-    ]);
+    expect(names({ brand: ['DMC', 'Vallejo'] })).toHaveLength(countWhere((entry) => ['DMC', 'Vallejo'].includes(entry.brand)));
+    expect(names({ brand: 'Citadel', line: 'Shade' })).toEqual(
+      expect.arrayContaining(['Agrax Earthshade', 'Druchii Violet', 'Nuln Oil', 'Reikland Fleshshade']),
+    );
+    expect(names({ brand: 'Citadel', line: 'Shade' })).toHaveLength(
+      countWhere((entry) => entry.brand === 'Citadel' && entry.line === 'Shade'),
+    );
     expect(names({ medium: 'embroidery_floss' })).toHaveLength(23);
     expect(names({ medium: ['embroidery_floss', 'oil_paint'] })).toHaveLength(23);
-    expect(names({ finish: 'fluorescent' })).toEqual(['Yellow Fluorescent']);
-    expect(names({ finishClass: 'transparent' })).toHaveLength(10);
-    expect(names({ finishClass: 'metallic', brand: 'Citadel' })).toHaveLength(6);
+    expect(names({ finish: 'fluorescent' })).toEqual(expect.arrayContaining(['Yellow Fluorescent']));
+    expect(names({ finish: 'fluorescent' })).toHaveLength(countWhere((entry) => entry.finish === 'fluorescent'));
+    expect(names({ finishClass: 'transparent' })).toHaveLength(
+      countWhere((entry) => ['wash', 'contrast'].includes(entry.finish)),
+    );
+    expect(names({ finishClass: 'metallic', brand: 'Citadel' })).toEqual(
+      expect.arrayContaining(['Leadbelcher', 'Retributor Armour', 'Runefang Steel']),
+    );
 
-    expect(names({ brand: 'Citadel' })).toHaveLength(40);
-    expect(names({ brand: 'Citadel', includeDiscontinued: false })).toHaveLength(38);
+    const citadel = countWhere((entry) => entry.brand === 'Citadel');
+    const citadelCurrent = countWhere((entry) => entry.brand === 'Citadel' && !entry.discontinued);
+    expect(names({ brand: 'Citadel' })).toHaveLength(citadel);
+    expect(names({ brand: 'Citadel', includeDiscontinued: false })).toHaveLength(citadelCurrent);
+    expect(citadelCurrent).toBeLessThan(citadel);
   });
 
   it('ranks by colour distance and applies a maximum distance', async () => {

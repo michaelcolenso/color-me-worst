@@ -93,7 +93,8 @@ describe('recipeParser', () => {
     expect(resolver.resolveLine('Citadel Black').kind).toBe('unknown');
     // A code and a name that disagree are both offered.
     const mixed = resolver.resolveLine('Vallejo 70.950 White');
-    expect(mixed.kind === 'item' && [mixed.item.name, ...mixed.alternatives.map((item) => item.name)]).toEqual(['Black', 'White']);
+    expect(mixed.kind === 'item' && mixed.item.name).toBe('Black');
+    expect(mixed.kind === 'item' && mixed.alternatives.map((item) => item.name)).toContain('White');
     expect(mixed.kind === 'item' && mixed.issue).toMatch(/white/);
   });
 
