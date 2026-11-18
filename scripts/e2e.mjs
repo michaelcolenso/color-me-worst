@@ -42,6 +42,8 @@ const server = await preview({ root, logLevel: 'error', preview: { port: 0, host
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 const browser = await chromium.launch();
 
+/** Number of items in the bundled catalogue, as the Stash tab reports it. */
+const CATALOG_SIZE = JSON.parse(readFileSync(join(root, 'src/data/catalogSeed.json'), 'utf8')).items.length;
 const STASH = ['Mephiston Red', 'White Scar', 'Abaddon Black', 'Averland Sunset', 'Macragge Blue', 'Rhinox Hide'];
 /** Items owned once the bulk-import steps have run: the six above, one from a pasted list, one from a photo. */
 const OWNED_AFTER_IMPORT = STASH.length + 2;
@@ -107,7 +109,7 @@ async function clickImage(page, x, y) {
 }
 
 const targetColor = (page, card = 0) =>
-  page.locator('.match-card').nth(card).getByTestId('swatch-target').evaluate((el) => getComputedStyle(el).backgroundColor);
+  page.locator('.match-card').nth(card).getByTestId('swatch-target').first().evaluate((el) => getComputedStyle(el).backgroundColor);
 
 async function run(label, viewport) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 2, hasTouch: label === 'phone' });
@@ -134,7 +136,7 @@ async function run(label, viewport) {
     await page.getByRole('button', { name: new RegExp(`^Add Citadel ${name} to my stash$`) }).click();
   }
   await page.getByLabel('Search').fill('');
-  await assertVisible(page.getByText(`${STASH.length} of 111`), 'owned count updates');
+  await assertVisible(page.getByText(`${STASH.length} of ${CATALOG_SIZE}`), 'owned count updates');
   await page.getByLabel('Only what I own').check();
   assert.equal(await page.locator('.stash-list li').count(), STASH.length, 'owned filter lists exactly the stash');
   await shot('2-stash');
@@ -172,6 +174,21 @@ async function run(label, viewport) {
   await assertVisible(review.nth(1).getByText('Not in the catalogue'), 'an unrecognised line is reported');
   await assertVisible(review.nth(2).getByText('Already owned'), 'an owned item is marked');
   assert.equal(await review.nth(2).locator('input[type=checkbox]').isDisabled(), true, 'an owned item is not added twice');
+  // A paint with an older version of the same name: the current one is chosen, the old one offered.
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByLabel('Paste a list of what you own').fill('Army Painter Greedy Gold');
+  await page.getByRole('button', { name: 'Find these' }).click();
+  await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
+  assert.equal(await review.nth(0).locator('select option').count(), 2, 'the current and the older version are both offered');
+  assert.match(await review.nth(0).locator('select option:checked').textContent(), /Warpaints Fanatic/, 'the current version is chosen');
+  assert.equal(await review.nth(0).locator('input[type=checkbox]').isChecked(), true, 'a confident match stays ticked');
+  await review.nth(0).locator('select').selectOption({ index: 1 });
+  assert.match(await review.nth(0).locator('select option:checked').textContent(), /Warpaints ·/, 'the older version can be chosen');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByLabel('Paste a list of what you own').fill('Ivory\nUnicorn Tears\nMephiston Red, Mephiston Red');
+  await page.getByRole('button', { name: 'Find these' }).click();
+  await page.getByRole('heading', { name: 'Check what was found' }).waitFor();
+  await review.nth(0).locator('select').selectOption({ label: 'Vallejo Ivory · Model Color · 70.918' });
   await page.getByRole('button', { name: 'Add 1 to my stash' }).click();
   await assertVisible(page.getByText('Added 1 to your stash.'), 'the list import confirms');
   assert.equal(await page.locator('.tab .count').textContent(), String(STASH.length + 1), 'the list import adds one item');
@@ -328,7 +345,7 @@ async function run(label, viewport) {
 
   // -- recipe card export ----------------------------------------------------------
   const cardTarget = await targetColor(page);
-  const cardMatch = await page.locator('.match-card').first().getByTestId('swatch-match').evaluate((el) => getComputedStyle(el).backgroundColor);
+  const cardMatch = await page.locator('.match-card').first().getByTestId('swatch-match').first().evaluate((el) => getComputedStyle(el).backgroundColor);
   const save = async (name) => {
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name, exact: true }).click()]);
     const file = join(downloadDir, `${label}-${download.suggestedFilename()}`);
@@ -465,6 +482,9 @@ async function run(label, viewport) {
   await assertVisible(page.getByText('1 to choose'), 'an ambiguous recipe line is counted as unresolved');
   await page.locator('.recipe-table select').first().selectOption({ label: 'Vallejo Ivory · Model Color' });
   await assertGone(page.getByText('1 to choose'), 'choosing resolves the line');
+  await page.getByLabel('Supply list').fill('Army Painter Greedy Gold');
+  await page.locator('.recipe-table select').first().waitFor();
+  assert.equal(await page.locator('.recipe-table select option').count(), 2, 'the recipe view offers the older version too');
   await page.getByRole('button', { name: 'Use an example' }).click();
   await assertVisible(page.getByRole('button', { name: 'Copy list' }), 'the shopping list can be copied');
   await shot('6-recipe');

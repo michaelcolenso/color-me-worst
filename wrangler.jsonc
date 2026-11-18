@@ -20,6 +20,17 @@
     "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimitCounter" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimitCounter"] }],
+  // Settings for branch Previews (`npx wrangler preview`, run by Workers Builds
+  // for non-production branches). Previews inherit nothing from the top level.
+  // Each Preview gets its own isolated Durable Object namespace automatically;
+  // the binding is repeated here because the code reads env.RATE_LIMITER.
+  // Secrets are not inherited either, so photo import stays off in Previews
+  // unless a GEMINI_API_KEY is set for them separately.
+  "previews": {
+    "durable_objects": {
+      "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimitCounter" }]
+    }
+  },
   "observability": { "enabled": true },
   // Do not send Wrangler usage telemetry from this project.
   "send_metrics": false

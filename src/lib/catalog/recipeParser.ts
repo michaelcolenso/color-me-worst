@@ -37,6 +37,12 @@ export type ResolvedRecipeLine =
        */
       alternatives: CatalogItem[];
       /**
+       * Discontinued versions of the same product (same brand and name, an
+       * older range). Not a reason for doubt; offered in case the user owns
+       * the old pot.
+       */
+      olderVersions?: CatalogItem[];
+      /**
        * Present when the line contains evidence that contradicts `item`, e.g.
        * a second product code or another paint's colour name. `item` is then
        * only a suggestion and must be confirmed by the user.
@@ -50,6 +56,14 @@ export type ResolvedRecipeLine =
       /** Why nothing matched, when there is something more useful to say than "not found". */
       reason?: string;
     };
+
+/**
+ * Every product a resolved item line could mean, best guess first: the
+ * equally good alternatives, then older versions of the same paint.
+ */
+export function candidatesOf(line: Extract<ResolvedRecipeLine, { kind: 'item' }>): CatalogItem[] {
+  return [line.item, ...line.alternatives, ...(line.olderVersions ?? [])];
+}
 
 /** True when a resolved line can be acted on without asking the user. */
 export function isConfident(line: ResolvedRecipeLine): boolean {
@@ -165,8 +179,15 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
     if (brandPhrases.has(item.brand)) continue;
     brandPhrases.set(item.brand, [item.brand, ...(BRAND_ALIASES[item.brand] ?? [])].map(normalise).filter(Boolean));
   }
-  /** Every word of every product name: a word from this set that the chosen item does not explain is a conflict. */
-  const nameWords = new Set(indexed.flatMap((entry) => entry.nameTokens));
+  /** Products by each word of their name, to find a second product named in the same line. */
+  const byNameWord = new Map<string, IndexedItem[]>();
+  for (const entry of indexed) {
+    for (const word of new Set(entry.nameTokens)) {
+      const list = byNameWord.get(word);
+      if (list === undefined) byNameWord.set(word, [entry]);
+      else list.push(entry);
+    }
+  }
 
   function explains(entry: IndexedItem, token: string): boolean {
     if (entry.ownWords.has(token) || FILLER_WORDS.has(token)) return true;
@@ -175,12 +196,39 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
     return false;
   }
 
-  /** Words in the line that identify some product other than `entry`. */
+  /**
+   * Words in the line that identify some product other than `entry`: a code
+   * it does not carry, or words completing another product's whole name
+   * ("Mephiston Red and Nuln Oil", "Vallejo 70.950 White"). A stray word that
+   * merely occurs in some other name ("for the cloak", with "Necromancer
+   * Cloak" in the catalogue) is not evidence of another product.
+   */
   function conflictingWords(entry: IndexedItem, tokens: readonly string[], brandWords: ReadonlySet<string>): string[] {
-    return tokens.filter(
-      (token) => !brandWords.has(token) && !explains(entry, token) && (/\d/.test(token) || nameWords.has(token)),
-    );
+    const unexplained = tokens.filter((token) => !brandWords.has(token) && !explains(entry, token));
+    const conflicts = new Set(unexplained.filter((token) => /\d/.test(token)));
+    const words = unexplained.filter((token) => !/\d/.test(token));
+    if (words.length === 0) return tokens.filter((token) => conflicts.has(token));
+    // The same tolerance as candidate scoring: exact, or one edit in a word of 5+ letters.
+    const matches = (token: string, nameWord: string) =>
+      token === nameWord || (nameWord.length >= 5 && token.length >= 4 && withinOneEdit(token, nameWord));
+    const present = (nameWord: string) => tokens.some((token) => matches(token, nameWord));
+    const seen = new Set<IndexedItem>();
+    for (const word of words) {
+      // Exact hits come from the index; near misses need a scan, which only
+      // runs for lines that already have an unexplained word.
+      const exact = byNameWord.get(word) ?? [];
+      const others = exact.length > 0 ? exact : indexed.filter((other) => other.nameTokens.some((t) => matches(word, t)));
+      for (const other of others) {
+        if (seen.has(other)) continue;
+        seen.add(other);
+        if (other === entry || other.item.name === entry.item.name) continue;
+        if (!other.nameTokens.every(present)) continue;
+        for (const token of words) if (other.nameTokens.some((nameWord) => matches(token, nameWord))) conflicts.add(token);
+      }
+    }
+    return tokens.filter((token) => conflicts.has(token));
   }
+
 
   function resolveLine(line: string): ResolvedRecipeLine {
     return resolveEntry(line).resolved;
@@ -262,10 +310,29 @@ export function createRecipeResolver(catalog: readonly CatalogItem[]): RecipeRes
     // Prefer an item still on sale when otherwise tied.
     best.sort((a, b) => Number(a.item.discontinued) - Number(b.item.discontinued));
     const chosen = best[0] as IndexedItem;
+    // A discontinued product with the same brand and name as the chosen one
+    // is an older version of the same paint, not a different product: offer
+    // it, but do not make the line uncertain because of it.
+    const olderVersions = best
+      .slice(1)
+      .filter(
+        (entry) =>
+          !chosen.item.discontinued &&
+          entry.item.discontinued &&
+          entry.item.brand === chosen.item.brand &&
+          entry.item.name === chosen.item.name,
+      );
+    const tied = best.slice(1).filter((entry) => !olderVersions.includes(entry));
     const conflicts = conflictingWords(chosen, tokens, brandWords);
     if (conflicts.length === 0) {
       return {
-        resolved: { kind: 'item', raw, item: chosen.item, alternatives: best.slice(1).map((entry) => entry.item) },
+        resolved: {
+          kind: 'item',
+          raw,
+          item: chosen.item,
+          alternatives: tied.map((entry) => entry.item),
+          ...(olderVersions.length > 0 ? { olderVersions: olderVersions.map((entry) => entry.item) } : {}),
+        },
         winner: chosen,
       };
     }

@@ -104,6 +104,14 @@ describe('label matching', () => {
     expect(unknownCode?.issue).toBeDefined();
   });
 
+  it('passes older versions of a paint to the client without making it uncertain', () => {
+    const [entry] = matchLabels([{ brand: 'Army Painter', name: 'Greedy Gold', code: null }], resolver);
+    expect(entry?.match?.id).toBe('army-painter:warpaints-fanatic:greedy-gold');
+    expect(entry?.alternatives).toEqual([]);
+    expect(entry?.issue).toBeUndefined();
+    expect(entry?.olderVersions?.map((ref) => ref.line)).toEqual(['Warpaints']);
+  });
+
   it('never resolves contradictory labels to a confident match', () => {
     const entries = matchLabels(
       [

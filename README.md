@@ -180,7 +180,7 @@ migration has been run against SQLite locally, not against a real D1 database.
 | Path | What it is |
 | --- | --- |
 | `migrations/0001_initial_schema.sql` | D1 schema: `brands`, `catalog_items`, `user_stashes`, `recipes`, `recipe_items`, with indexes |
-| `data/catalog/seed-source.json` | 111 curated items: name, code, hex, finish, opacity, provenance |
+| `data/catalog/seed-source.json` | 1,312 catalogue items (revision 2): name, code, hex, finish, opacity, provenance |
 | `scripts/buildSeedSource.py` | One-off import tool that built the source list from two public datasets |
 | `scripts/generateSeed.ts` | Computes CIELAB/OKLCh for every item and writes the two files below |
 | `db/seed/catalog_seed.sql` | Generated seed rows for D1 (idempotent) |
@@ -190,10 +190,42 @@ migration has been run against SQLite locally, not against a real D1 database.
 
 ### Seed catalogue
 
-111 items: Citadel 40, Vallejo Model Color 25, Monument Hobbies Pro Acryl 23,
-DMC six-strand floss 23. It deliberately includes metallics, washes, contrast
-paints, a fluorescent, a gloss and two discontinued paints so every matching
-rule has real data to act on.
+Revision 2 (November 2026): 1,312 items. The full brush-paint ranges that
+miniature-painting tutorials name, plus the original DMC thread sample:
+
+| Brand | Ranges | Items |
+| --- | --- | --- |
+| Citadel | Base, Layer, Dry, Shade, Glaze, Contrast; Foundation and Foundation Wash (discontinued) | 334 |
+| Vallejo | Model Color, Game Color, Game Color Wash, Xpress Color, Xpress Color Intense | 428 |
+| Army Painter | Warpaints Fanatic and Fanatic Wash, Speedpaint 2.0; original Warpaints (marked discontinued) | 408 |
+| Monument Hobbies | Pro Acryl (with its washes), Pro Acryl Signature | 119 |
+| DMC | Six-strand floss sample, unchanged | 23 |
+
+Left out on purpose: airbrush and spray ranges, primers, varnishes, mediums,
+texture and effect paints. Every revision-1 id is unchanged, so existing
+stashes keep working; the build checked that all 111 revision-1 items are
+present with the same colour, finish and opacity.
+
+Assumptions made by `scripts/buildSeedSource.py` that you may want to check:
+
+- **Finish is assigned by rule.** Each range has a default (Shade and washes
+  are `wash`, Contrast/Speedpaint/Xpress are `contrast`, the rest `matte`).
+  Metallics in opaque ranges are found by whole words (gold, silver, steel,
+  bronze…) plus a short list of names with no such word (Leadbelcher,
+  Retributor Armour, Screaming Bell…) and exceptions (Steel Legion Drab,
+  Bronze Green, Bronze Brown, anything "Golden", "Gold Yellow"). The build
+  prints every name it classed as metallic. Vallejo Game Color "Steel Grey"
+  is treated as non-metallic on judgement, not evidence.
+- **The original Army Painter Warpaints range is assumed discontinued**
+  (superseded by Warpaints Fanatic). It stays in the catalogue so older
+  tutorials resolve; the recipe translator prefers the Fanatic paint of the
+  same name and offers the old one alongside, without asking.
+- **The dataset has errors the build works around:** Army Painter code WP1405
+  is given to two different paints (the second is identified by name); Vallejo
+  72.483 and Citadel Kommando Khaki are listed twice with different colours
+  (the first listing is kept).
+- **The dataset was last updated in March 2025**, so paints released since
+  then are missing.
 
 **Where the data came from, and how far to trust it**
 
@@ -206,9 +238,13 @@ rule has real data to act on.
   physical paint or thread, and some are plainly approximate (the source lists
   Citadel's Abaddon Black as pure `#000000`, which no real paint is). Every
   seed row is therefore marked `color_source = 'community'`.
-- **Finish and opacity are not in either dataset.** They were assigned by hand
-  in `scripts/buildSeedSource.py` (for example, Citadel Shade paints as `wash`
-  at opacity 0.25). Treat them as editorial assumptions.
+- **Finish and opacity are not in either dataset.** They are assigned by rule
+  in `scripts/buildSeedSource.py` (see above). Treat them as editorial
+  assumptions.
+- **Licensing:** see `THIRD_PARTY_NOTICES.md`. The paint dataset is MIT
+  licensed, but its README describes the data as scraped and invites use "in
+  your own personal projects"; confirm commercial use with its author before
+  launch. The DMC dataset publishes no licence at all.
 - The paint dataset has no Citadel product codes, so Citadel SKUs are derived
   from the paint name.
 
@@ -252,7 +288,7 @@ of sync is not built yet.
 - No Worker API, authentication or deployed database.
 - No network sync; only the local bookkeeping for it.
 - `user_id` is an opaque string with no users table, pending an auth decision.
-- The catalogue is a 111-item sample, not a full range for any brand.
+- (Revision 1 was a 111-item sample; revision 2 covers four brands' full brush ranges.)
 
 ## Phase 3: photo normalisation and colour extraction
 
